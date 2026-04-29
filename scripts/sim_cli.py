@@ -52,9 +52,17 @@ import numpy as np
 # Allow running as either `python scripts/sim_cli.py` or `python -m scripts.sim_cli`.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from _g1_sim import DEFAULT_SCENE, G1World, WalkParams, run_demo
+    from _g1_sim import (
+        DEFAULT_SCENE, G1World, WalkParams, run_demo,
+        KinematicLocomotionController, ArmCartesianController, BoxCamDetector,
+        pickup_detected_box, place_detected_box,
+    )
 else:
-    from ._g1_sim import DEFAULT_SCENE, G1World, WalkParams, run_demo
+    from ._g1_sim import (
+        DEFAULT_SCENE, G1World, WalkParams, run_demo,
+        KinematicLocomotionController, ArmCartesianController, BoxCamDetector,
+        pickup_detected_box, place_detected_box,
+    )
 
 
 # --------------------------- helper: expression eval --------------------------
@@ -121,6 +129,14 @@ class G1Cli(cmd.Cmd):
         super().__init__(*args, **kwargs)
         self.world = world
         self.walk_params = WalkParams()
+        # Hybrid teleop add-ons: locomotion controller, per-arm Cartesian
+        # controllers, and the camera detector. Shared with sim_cli.py so the
+        # same commands work both interactively and from scripts.
+        self.loco = KinematicLocomotionController(world, self.walk_params)
+        self.left_arm = ArmCartesianController(world, "left")
+        self.right_arm = ArmCartesianController(world, "right")
+        self.detector = BoxCamDetector(world)
+        self.last_detection = None
         # Lock to coordinate world mutations between the CLI thread and any
         # background "run" thread (used by `bg ...` and the viewer sync).
         self._lock = threading.RLock()
@@ -417,6 +433,112 @@ box show                Print box pose."""
             self._ok()
         except ValueError:
             self._err("usage: sleep <seconds>")
+        return False
+
+    def do_cmdvel(self, arg: str) -> bool:
+        """cmdvel <forward> <lateral> <yaw_rate> <seconds>
+        Apply a body-frame velocity command for a duration.
+
+        Example:  cmdvel 0.9 0 0 1.5     # walk forward at 0.9 m/s for 1.5 s
+                  cmdvel 0 0 1.5 2.1     # spin in place
+        """
+        toks = arg.split()
+        if len(toks) != 4:
+            self._err("usage: cmdvel <forward> <lateral> <yaw_rate> <seconds>"); return False
+        try:
+            f, s, w_yr, dur = (float(t) for t in toks)
+        except ValueError:
+            self._err("expected 4 floats"); return False
+        n = int(dur / self.world.dt)
+        with self._lock:
+            for _ in range(n):
+                self.loco.step(f, s, w_yr)
+        self._ok(f"cmdvel done; pelvis={self.world.pelvis_pos.round(3).tolist()} "
+                 f"yaw={math.degrees(self.world.pelvis_yaw):+.1f}°")
+        return False
+
+    def do_detect(self, _arg: str) -> bool:
+        """detect                  Run a perception step on the onboard d435i_rgb camera.
+
+        Updates the CLI's `last detection` state. The estimated world position
+        of the box is then accessible via `target.x` is NOT remapped; instead
+        use `det.x det.y det.z` after a successful detection."""
+        with self._lock:
+            d = self.detector.detect()
+            self.last_detection = d
+        if d.found:
+            self._ok(f"bbox={d.bbox} pixel={d.pixel_xy} world={d.world_pos.round(3).tolist()} "
+                     f"conf={d.world_pos_confidence:.2f}")
+        else:
+            self._err("no red box visible from d435i_rgb")
+        return False
+
+    def do_pickup(self, arg: str) -> bool:
+        """pickup [left|right]     Reach the LAST detected box and grasp it.
+
+        Runs `detect` first if no detection is active. Gated on a successful
+        camera detection: this is what the user-facing 'prompt' workflow uses."""
+        hand = (arg.strip().lower() or "left")
+        if hand not in ("left", "right"):
+            self._err("usage: pickup [left|right]"); return False
+        if self.last_detection is None or not self.last_detection.found:
+            self.do_detect("")
+        if self.last_detection is None or not self.last_detection.found:
+            self._err("no detection; aborting pickup"); return False
+        with self._lock:
+            ok = pickup_detected_box(self.world, self.last_detection, hand=hand)
+        self._ok(f"PICKUP ok; held by {hand}") if ok else self._err("PICKUP failed (out of reach or IK timeout)")
+        return False
+
+    def do_place(self, arg: str) -> bool:
+        """place [left|right]      Place the carried box on the place_target."""
+        hand = (arg.strip().lower() or self.world.held_by or "left")
+        if hand not in ("left", "right"):
+            self._err("usage: place [left|right]"); return False
+        with self._lock:
+            ok = place_detected_box(self.world, hand=hand)
+        self._ok(f"PLACE ok; box={self.world.box_pos().round(3).tolist()}") if ok else self._err("PLACE failed")
+        return False
+
+    def do_armvel(self, arg: str) -> bool:
+        """armvel <left|right> <vx> <vy> <vz> [seconds]
+        Drive the chosen end-effector at a Cartesian velocity (world frame)
+        through the ArmCartesianController (the WBC-flavored DLS IK)."""
+        toks = arg.split()
+        if len(toks) not in (4, 5) or toks[0] not in ("left", "right"):
+            self._err("usage: armvel <left|right> <vx> <vy> <vz> [seconds]"); return False
+        try:
+            hand = toks[0]
+            vx, vy, vz = float(toks[1]), float(toks[2]), float(toks[3])
+            dur = float(toks[4]) if len(toks) == 5 else 0.5
+        except ValueError:
+            self._err("expected: armvel <hand> <vx> <vy> <vz> [seconds]"); return False
+        ctl = self.left_arm if hand == "left" else self.right_arm
+        with self._lock:
+            ctl.activate()
+            n = int(dur / self.world.dt)
+            for _ in range(n):
+                ctl.integrate_velocity(vx, vy, vz)
+                ctl.step()
+                self.world.kine_tick()
+        self._ok(f"{hand}_hand={self.world.hand_pos(hand).round(3).tolist()} "
+                 f"target={ctl.target.pos.round(3).tolist()}")
+        return False
+
+    def do_arm(self, arg: str) -> bool:
+        """arm left|right|none     Activate the Cartesian controller for a hand
+        (or release it back to the locomotion's arm swing)."""
+        sub = arg.strip().lower()
+        with self._lock:
+            if sub == "left":
+                self.left_arm.activate(); self.right_arm.deactivate()
+            elif sub == "right":
+                self.right_arm.activate(); self.left_arm.deactivate()
+            elif sub == "none":
+                self.left_arm.deactivate(); self.right_arm.deactivate()
+            else:
+                self._err("usage: arm left|right|none"); return False
+        self._ok(f"active={sub}")
         return False
 
     # Aliases / quitters.

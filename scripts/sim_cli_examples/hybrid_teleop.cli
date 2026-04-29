@@ -1,0 +1,38 @@
+# scripts/sim_cli_examples/hybrid_teleop.cli
+#
+# Hybrid teleop flow driven by joystick-style velocity commands plus
+# perception-gated grasp/place prompts. Run with:
+#
+#   python scripts/sim_cli.py --script scripts/sim_cli_examples/hybrid_teleop.cli
+#
+# What this exercises:
+#   * Locomotion via body-frame velocity command (`cmdvel`) - the same input a
+#     joystick produces. The walking policy seam lives in
+#     KinematicLocomotionController / TrainedRLLocomotionController; this
+#     script uses the kinematic backend so it runs without a checkpoint.
+#   * Onboard-camera perception (`detect`) - HSV segmentation of the red box
+#     in the d435i_rgb view, ray-cast back to the table plane.
+#   * Prompt-driven grasp (`pickup`) and release (`place`) - both gated on a
+#     successful detection.
+
+status
+
+# 1. Drive forward at 0.9 m/s for 1.6s -> pelvis ~ (1.44, 0, 0)
+cmdvel 0.9 0 0 1.6
+
+# 2. Detect the red box from the onboard camera.
+detect
+
+# 3. PICKUP via prompt (perception-gated; uses last_detection coordinates).
+pickup left
+
+# 4. Joystick-style: spin 180 degrees (yaw 1.5 rad/s for ~pi/1.5 = 2.1s).
+cmdvel 0 0 1.5 2.1
+
+# 5. Drive back toward the shelf.
+cmdvel 0.9 0 0 4.4
+
+# 6. PLACE the box on the place_target via prompt.
+place left
+status
+quit
