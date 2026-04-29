@@ -146,7 +146,7 @@
             <geom pos="0.0039635 0 -0.044" quat="1 0 0 0" type="mesh" rgba="0.2 0.2 0.2 1" mesh="logo_link"/>
             <geom pos="0.0039635 0 -0.044" type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1" mesh="head_link"/>
             <geom pos="0.0039635 0 -0.044" type="mesh" rgba="0.2 0.2 0.2 1" mesh="head_link"/>
-            <site name="imu_in_torso" size="0.01" pos="-0.03959 -0.00224 0.14792"/>s
+            <site name="imu_in_torso" size="0.01" pos="-0.03959 -0.00224 0.14792"/>
     <!-- ========== INSERT CAMERA BLOCK HERE ========== -->
     <!-- ========== INTEL REALSENSE D435i ========== -->
             <site name="d435i_mount" size="0.01" pos="0.08 0 0.32" quat="1 0 0 0" rgba="0.2 0.2 0.8 1"/>
@@ -247,33 +247,49 @@
     </body>
 
         <!-- ========== WAREHOUSE SCENE ========== -->
-    <!-- Reception Table -->
-    <body name="reception_table" pos="2.0 0.5 0.4">
-        <geom name="table_top" type="box" size="0.6 0.4 0.02" pos="0 0 0.4" rgba="0.5 0.35 0.05 1"/>
-        <geom name="table_leg1" type="cylinder" size="0.03 0.4" pos="-0.5 -0.3 0.0" rgba="0.4 0.25 0.1 1"/>
-        <geom name="table_leg2" type="cylinder" size="0.03 0.4" pos="0.5 -0.3 0.0" rgba="0.4 0.25 0.1 1"/>
-        <geom name="table_leg3" type="cylinder" size="0.03 0.4" pos="-0.5 0.3 0.0" rgba="0.4 0.25 0.1 1"/>
-        <geom name="table_leg4" type="cylinder" size="0.03 0.4" pos="0.5 0.3 0.0" rgba="0.4 0.25 0.1 1"/>
-
-        <!-- Red Box (GOST R 55525-2017 standard dimensions: 400x300x200mm) -->
-        <body name="warehouse_box" pos="0 0 0.5">
-            <joint name="box_joint"/>
-            <geom name="box_geom" type="box" size="0.2 0.15 0.1" rgba="1 0 0 1"/>
-        </body>
+    <!-- Reception Table (static: no joint => welded to world) -->
+    <body name="reception_table" pos="0.55 0.0 0.0">
+        <geom name="table_top" type="box" size="0.30 0.30 0.02" pos="0 0 0.74" rgba="0.5 0.35 0.05 1"/>
+        <geom name="table_leg1" type="cylinder" size="0.03 0.36" pos="-0.25 -0.25 0.36" rgba="0.4 0.25 0.1 1"/>
+        <geom name="table_leg2" type="cylinder" size="0.03 0.36" pos=" 0.25 -0.25 0.36" rgba="0.4 0.25 0.1 1"/>
+        <geom name="table_leg3" type="cylinder" size="0.03 0.36" pos="-0.25  0.25 0.36" rgba="0.4 0.25 0.1 1"/>
+        <geom name="table_leg4" type="cylinder" size="0.03 0.36" pos=" 0.25  0.25 0.36" rgba="0.4 0.25 0.1 1"/>
     </body>
 
-    <!-- Storage Shelf -->
-    <body name="storage_shelf" pos="2.0 -1.5 0.4">
-        <geom name="shelf_bottom" type="box" size="0.6 0.4 0.02" pos="0 0 0.2" rgba="0.6 0.6 0.6 1"/>
-        <geom name="shelf_middle" type="box" size="0.6 0.4 0.02" pos="0 0 0.8" rgba="0.6 0.6 0.6 1"/>
-        <geom name="shelf_top" type="box" size="0.6 0.4 0.02" pos="0 0 1.4" rgba="0.6 0.6 0.6 1"/>
-        <geom name="shelf_leg1" type="cylinder" size="0.03 1" pos="-0.5 -0.3 0.4" rgba="0.5 0.5 0.5 1"/>
-        <geom name="shelf_leg2" type="cylinder" size="0.03 1" pos="0.5 -0.3 0.4" rgba="0.5 0.5 0.5 1"/>
-        <geom name="shelf_leg3" type="cylinder" size="0.03 1" pos="-0.5 0.3 0.4" rgba="0.5 0.5 0.5 1"/>
-        <geom name="shelf_leg4" type="cylinder" size="0.03 1" pos="0.5 0.3 0.4" rgba="0.5 0.5 0.5 1"/>
+    <!-- Pickable Red Box (free body so it can be grasped/dropped). Placed on the
+         near edge of the table on the robot's LEFT side so the left arm can
+         reach it without the body colliding with the table. -->
+    <body name="warehouse_box" pos="0.45 0.15 0.81">
+        <freejoint name="box_joint"/>
+        <inertial pos="0 0 0" mass="1.0" diaginertia="0.0042 0.0042 0.0042"/>
+        <geom name="box_geom" type="box" size="0.05 0.05 0.05" rgba="1 0.1 0.1 1" friction="1.5 0.05 0.001"/>
+        <site name="box_site" pos="0 0 0" size="0.005" rgba="1 1 0 1"/>
+    </body>
+
+    <!-- Storage Shelf (static) and a placement target on its bottom shelf.
+         Placed BEHIND the robot; we'll turn 180 deg to place the box. -->
+    <body name="storage_shelf" pos="-0.45 0.0 0.0">
+        <geom name="shelf_bottom" type="box" size="0.25 0.25 0.02" pos="0 0 0.40" rgba="0.6 0.6 0.6 1"/>
+        <geom name="shelf_middle" type="box" size="0.25 0.25 0.02" pos="0 0 0.80" rgba="0.6 0.6 0.6 1"/>
+        <geom name="shelf_top"    type="box" size="0.25 0.25 0.02" pos="0 0 1.20" rgba="0.6 0.6 0.6 1"/>
+        <geom name="shelf_leg1" type="cylinder" size="0.03 0.6" pos="-0.22 -0.22 0.6" rgba="0.5 0.5 0.5 1"/>
+        <geom name="shelf_leg2" type="cylinder" size="0.03 0.6" pos=" 0.22 -0.22 0.6" rgba="0.5 0.5 0.5 1"/>
+        <geom name="shelf_leg3" type="cylinder" size="0.03 0.6" pos="-0.22  0.22 0.6" rgba="0.5 0.5 0.5 1"/>
+        <geom name="shelf_leg4" type="cylinder" size="0.03 0.6" pos=" 0.22  0.22 0.6" rgba="0.5 0.5 0.5 1"/>
+        <!-- Place target on the middle shelf, offset toward where the robot's
+             LEFT hand will be after a 180-deg turn (world -y side). -->
+        <site name="place_target" pos="0.0 -0.15 0.83" size="0.05 0.05 0.001" type="box" rgba="0 1 0 0.3"/>
     </body>
     <!-- ========== END WAREHOUSE SCENE ========== -->
   </worldbody>
+
+  <!-- Equality constraints used to "grasp" the box from Python at runtime.
+       Both are inactive by default; the demo enables one of them when the
+       corresponding hand reaches the box. -->
+  <equality>
+    <weld name="left_hand_grasp"  body1="left_wrist_yaw_link"  body2="warehouse_box" active="false" solref="0.005 1"/>
+    <weld name="right_hand_grasp" body1="right_wrist_yaw_link" body2="warehouse_box" active="false" solref="0.005 1"/>
+  </equality>
 
   <actuator>
     <motor name="left_hip_pitch" joint="left_hip_pitch_joint" ctrlrange="-88 88" />
@@ -416,7 +432,7 @@
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0.9 0.9 0.9"/>
     <rgba haze="0.15 0.25 0.35 1"/>
-    <global azimuth="-140" elevation="-20"/>
+    <global azimuth="-140" elevation="-20" offwidth="1280" offheight="720"/>
   </visual>
   <asset>
     <texture type="skybox" builtin="flat" rgb1="0 0 0" rgb2="0 0 0" width="512" height="3072"/>
