@@ -1,0 +1,27 @@
+Wed Apr 22 15:09:11 2026
+ERROR: Default framebuffer is not complete, error 0x0
+
+Thu Apr 23 10:59:26 2026
+ERROR: Default framebuffer is not complete, error 0x0
+
+Thu Apr 23 11:19:03 2026
+ERROR: Default framebuffer is not complete, error 0x0
+
+Thu Apr 23 11:41:22 2026
+ERROR: Default framebuffer is not complete, error 0x0
+
+Thu Apr 23 12:38:41 2026
+ERROR: Default framebuffer is not complete, error 0x0
+
+Thu Apr 23 13:24:09 2026
+ERROR: Could not allocate offscreen framebuffer
+
+Thu Apr 23 13:25:33 2026
+ERROR: Could not allocate offscreen framebuffer
+
+Thu Apr 23 13:33:48 2026
+ERROR: Could not allocate offscreen framebuffer
+
+Thu Apr 23 13:34:23 2026
+ERROR: Could not allocate offscreen framebuffer
+

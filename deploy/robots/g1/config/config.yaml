@@ -1,0 +1,104 @@
+FSM:
+  _: # enabled fsms
+    Passive:
+      id: 1
+    FixStand:
+      id: 2
+    Velocity:
+      id: 3
+      type: RLBase
+    Manipulate:
+      id: 4
+      type: RLBase
+    WalkManipulate:
+      id: 6
+      type: RLHybrid
+    Mimic_Dance1_subject2:
+      id: 5
+      type: Mimic
+
+  Passive:
+    transitions: 
+      FixStand: LT + up.on_pressed
+    mode: [
+      1,1,1,1,1,1,
+      1,1,1,1,1,1,
+      1,1,1,
+      1,1,1,1,1,1,1,
+      1,1,1,1,1,1,1,
+    ]
+    kd: [
+      3,3,3,3,3,3,
+      3,3,3,3,3,3,
+      3,3,3,
+      3,3,3,3,3,3,3,  
+      3,3,3,3,3,3,3,  
+    ]
+
+  FixStand:
+    transitions: 
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+      Manipulate: RB + X.on_pressed
+      WalkManipulate: RT + X.on_pressed
+    kp: [
+      100,100,100,150,40,40,
+      100,100,100,150,40,40,
+      200,200,200,
+      40,40,40,40,40,40,40,
+      40,40,40,40,40,40,40,
+    ]
+    kd: [
+      2,2,2,4,2,2,
+      2,2,2,4,2,2,
+      5,5,5,
+      10,10,10,10,10,10,10,
+      10,10,10,10,10,10,10,
+    ]
+    ts: [0, 2]
+    qs: [
+      [],
+      [ -0.1, 0,0,0.3,-0.2,0,
+        -0.1, 0,0,0.3,-0.2,0,
+        0,0,0,
+        0.35, 0.18,0,0.87,0,0,0,
+        0.35,-0.18,0,0.87,0,0,0
+      ]
+    ]
+
+  Velocity:
+    transitions: 
+      Passive: LT + B.on_pressed
+      Manipulate: RT + X.on_pressed
+      Mimic_Dance1_subject2: RB + A.on_pressed
+    policy_dir: config/policy/velocity
+
+  Manipulate:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+    policy_dir: config/policy/manipulate
+    # Only let this state control arm joints; keep legs/waist holding to stay stable.
+    controlled_joint_ids: [15,16,17,18,19,20,21,22,23,24,25,26,27,28]
+
+  WalkManipulate:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+      Manipulate: RB + X.on_pressed
+    primary_policy_dir: config/policy/velocity
+    secondary_policy_dir: config/policy/manipulate
+    # Blend factor for selected joints: 0.0 = pure walking policy, 1.0 = pure manipulation policy.
+    blend_alpha: 0.5
+    # Action indices to blend (MuJoCo actuator order for G1-29DoF):
+    # 0..11 legs, 12..14 waist, 15..21 left arm, 22..28 right arm
+    blend_joint_indices: [15,16,17,18,19,20,21,22,23,24,25,26,27,28]
+
+  Mimic_Dance1_subject2:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+    motion_file: config/policy/mimic/dance1_subject2/params/dance1_subject2.npz
+    policy_dir: config/policy/mimic/dance1_subject2/
+    time_start: 0.0
+    time_end: 1000.0

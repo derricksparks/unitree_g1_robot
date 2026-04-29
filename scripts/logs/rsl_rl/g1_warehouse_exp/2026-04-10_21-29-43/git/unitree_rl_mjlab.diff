@@ -1,0 +1,58 @@
+--- git commit ---
+1f92312c97f22fc107c5d067ebec3e908008687a
+
+
+--- git status ---
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   scripts/play.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	scripts/play.py.bak
+	src/__pycache__/
+	src/assets/__pycache__/
+	src/assets/robots/__pycache__/
+	src/assets/robots/unitree_a2/__pycache__/
+	src/assets/robots/unitree_g1/__pycache__/
+	src/assets/robots/unitree_go2/__pycache__/
+	src/assets/robots/unitree_h1_2/__pycache__/
+	src/assets/robots/unitree_r1/__pycache__/
+	src/tasks/__pycache__/
+	src/tasks/tracking/__pycache__/
+	src/tasks/tracking/config/__pycache__/
+	src/tasks/tracking/config/g1/__pycache__/
+	src/tasks/tracking/mdp/__pycache__/
+	src/tasks/tracking/rl/__pycache__/
+	src/tasks/velocity/__pycache__/
+	src/tasks/velocity/config/__pycache__/
+	src/tasks/velocity/config/a2/__pycache__/
+	src/tasks/velocity/config/g1/__pycache__/
+	src/tasks/velocity/config/g1_23dof/__pycache__/
+	src/tasks/velocity/config/go2/__pycache__/
+	src/tasks/velocity/config/h1_2/__pycache__/
+	src/tasks/velocity/config/r1/__pycache__/
+	src/tasks/velocity/mdp/__pycache__/
+	src/tasks/velocity/rl/__pycache__/
+
+no changes added to commit (use "git add" and/or "git commit -a") 
+
+
+--- git diff ---
+diff --git a/scripts/play.py b/scripts/play.py
+index 98f45fc..50a37c4 100644
+--- a/scripts/play.py
++++ b/scripts/play.py
+@@ -91,7 +91,7 @@ def run_play(task_id: str, cfg: PlayConfig):
+         raise FileNotFoundError(f"Checkpoint file not found: {resume_path}")
+       print(f"[INFO]: Loading checkpoint: {resume_path.name}")
+     else:
+-      if cfg.wandb_run_path is None:
++      if getattr(cfg, "wandb_run_path", None) is None:
+         raise ValueError(
+           "`wandb_run_path` is required when `checkpoint_file` is not provided."
+         )
