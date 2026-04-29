@@ -63,6 +63,7 @@ READY_POSE = {
 }
 
 Hand = Literal["left", "right"]
+GraspMode = Literal["left", "right", "both"]
 
 
 def _name_to_id(model: mujoco.MjModel, obj: int, name: str) -> int:
@@ -189,8 +190,17 @@ class G1World:
         ])
 
         # Carry state.
-        self._held_by: Optional[Hand] = None
-        self._box_offset_in_hand = np.zeros(3)
+        # `_held_by` is one of {None, "left", "right", "both"}. For single-hand
+        # carries we record the box offset in that hand's body frame. For a
+        # both-hands carry we additionally record the box offset relative to
+        # each wrist so the box stays at the midpoint of the two hands and
+        # rotates with them; if a hand drifts, the box drifts smoothly with
+        # the average of both estimates.
+        self._held_by: Optional[GraspMode] = None
+        self._box_offset_in_hand = np.zeros(3)        # single-hand mode
+        self._box_offset_in_left = np.zeros(3)        # both-hands mode (per-wrist; advisory)
+        self._box_offset_in_right = np.zeros(3)       # both-hands mode (per-wrist; advisory)
+        self._box_offset_in_pelvis = np.zeros(3)      # both-hands mode (carry frame)
         self._walk_phase: float = 0.0
         self._sim_time: float = 0.0
         self._step_count: int = 0
@@ -289,13 +299,39 @@ class G1World:
 
     # ----------------------- carry (grasp/release) ----------------------- #
 
-    def grasp(self, hand: Hand) -> None:
-        bid = self._left_h_b if hand == "left" else self._right_h_b
-        hand_pos = np.asarray(self.data.xpos[bid]).copy()
-        hand_mat = np.asarray(self.data.xmat[bid]).reshape(3, 3).copy()
-        rel = hand_mat.T @ (self.box_pos() - hand_pos)
-        self._held_by = hand
-        self._box_offset_in_hand[:] = rel
+    def _record_offset(self, body_id: int) -> np.ndarray:
+        """Box position in the given body's local frame at grasp time."""
+        hand_pos = np.asarray(self.data.xpos[body_id]).copy()
+        hand_mat = np.asarray(self.data.xmat[body_id]).reshape(3, 3).copy()
+        return hand_mat.T @ (self.box_pos() - hand_pos)
+
+    def _record_pelvis_offset(self) -> np.ndarray:
+        """Box position in the pelvis's local frame at grasp time. Used for
+        the both-hands carry: the box "rides" with the body, regardless of
+        what the arm joints subsequently do during transit/placement."""
+        pp = np.asarray(self.data.xpos[self._pelvis_b]).copy()
+        pm = np.asarray(self.data.xmat[self._pelvis_b]).reshape(3, 3).copy()
+        return pm.T @ (self.box_pos() - pp)
+
+    def grasp(self, hand: GraspMode = "both") -> None:
+        """Attach the box to one or both hands.
+
+        ``hand`` is "left", "right", or "both". For single-hand grasps the
+        box rides rigidly with the chosen wrist. For "both", the box rides
+        rigidly with the *pelvis* (the natural carry pose) so it doesn't
+        get yanked around if one arm shifts during transit or placement.
+        """
+        if hand == "both":
+            self._box_offset_in_left[:]  = self._record_offset(self._left_h_b)
+            self._box_offset_in_right[:] = self._record_offset(self._right_h_b)
+            self._box_offset_in_pelvis = self._record_pelvis_offset()
+            self._held_by = "both"
+        elif hand in ("left", "right"):
+            bid = self._left_h_b if hand == "left" else self._right_h_b
+            self._box_offset_in_hand[:] = self._record_offset(bid)
+            self._held_by = hand
+        else:
+            raise ValueError(f"hand must be left|right|both, got {hand!r}")
 
     def release(self) -> None:
         self._held_by = None
@@ -303,10 +339,20 @@ class G1World:
     def _update_carry(self) -> None:
         if self._held_by is None:
             return
-        bid = self._left_h_b if self._held_by == "left" else self._right_h_b
-        hand_pos = np.asarray(self.data.xpos[bid]).copy()
-        hand_mat = np.asarray(self.data.xmat[bid]).reshape(3, 3).copy()
-        new_pos = hand_pos + hand_mat @ self._box_offset_in_hand
+        if self._held_by == "both":
+            # Pelvis-frame carry: the box rides with the body. This is robust
+            # to arm-joint motion during transit or placement because it
+            # doesn't depend on wrist orientation. The arms still need to
+            # surround the box for the carry to look correct, but the carry
+            # math itself is decoupled from arm IK transients.
+            pp = np.asarray(self.data.xpos[self._pelvis_b]).copy()
+            pm = np.asarray(self.data.xmat[self._pelvis_b]).reshape(3, 3).copy()
+            new_pos = pp + pm @ self._box_offset_in_pelvis
+        else:
+            bid = self._left_h_b if self._held_by == "left" else self._right_h_b
+            hand_pos = np.asarray(self.data.xpos[bid]).copy()
+            hand_mat = np.asarray(self.data.xmat[bid]).reshape(3, 3).copy()
+            new_pos = hand_pos + hand_mat @ self._box_offset_in_hand
         self.data.qpos[self._box_qadr + 0] = float(new_pos[0])
         self.data.qpos[self._box_qadr + 1] = float(new_pos[1])
         self.data.qpos[self._box_qadr + 2] = float(new_pos[2])
@@ -386,17 +432,21 @@ class G1World:
 
         self.set_floating_base((new_xy[0], new_xy[1], pos[2]), new_yaw)
 
-        # Arm swing.
+        # Arm swing -- but only when both hands are free (not carrying anything,
+        # not commanded by an external Cartesian arm controller).
         self._walk_phase += 2.0 * math.pi * p.swing_freq_hz * self.dt
         swing = p.arm_swing_amp * math.sin(self._walk_phase)
+        carrying = self._held_by is not None
         l_idx = int(self.model.jnt_qposadr[
             _name_to_id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "left_shoulder_pitch_joint")
         ])
         r_idx = int(self.model.jnt_qposadr[
             _name_to_id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "right_shoulder_pitch_joint")
         ])
-        self.data.qpos[l_idx] = READY_POSE["left_shoulder_pitch_joint"] + swing
-        self.data.qpos[r_idx] = READY_POSE["right_shoulder_pitch_joint"] - swing
+        if not carrying and not self._arm_ctrl_active_left:
+            self.data.qpos[l_idx] = READY_POSE["left_shoulder_pitch_joint"] + swing
+        if not carrying and not self._arm_ctrl_active_right:
+            self.data.qpos[r_idx] = READY_POSE["right_shoulder_pitch_joint"] - swing
 
         return dist < 0.02 and abs(yaw_err) < 0.05
 
@@ -489,11 +539,12 @@ class G1World:
         r_idx = int(self.model.jnt_qposadr[
             _name_to_id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "right_shoulder_pitch_joint")
         ])
-        # Only override shoulder pitch when no per-arm Cartesian command is
-        # active; otherwise the ArmCartesianController will set them.
-        if not getattr(self, "_arm_ctrl_active_left", False):
+        # Skip arm swing while either an arm controller owns the joint or
+        # the box is being carried (the carry pose should look stable).
+        carrying = self._held_by is not None
+        if not carrying and not getattr(self, "_arm_ctrl_active_left", False):
             self.data.qpos[l_idx] = READY_POSE["left_shoulder_pitch_joint"] + swing
-        if not getattr(self, "_arm_ctrl_active_right", False):
+        if not carrying and not getattr(self, "_arm_ctrl_active_right", False):
             self.data.qpos[r_idx] = READY_POSE["right_shoulder_pitch_joint"] - swing
 
     # ----------------------- video / viewer ----------------------- #
@@ -548,29 +599,89 @@ class G1World:
 
 # ----------------------- canned demo entry point --------------------------- #
 
-def run_demo(world: G1World, verbose: bool = True) -> int:
-    """Walk -> pick -> walk -> place -> retreat. Returns 0 on success."""
-    pr = (lambda *a, **k: print("[g1_sim]", *a, **k)) if verbose else (lambda *a, **k: None)
+def run_demo(world: G1World, verbose: bool = True, hand: GraspMode = "both") -> int:
+    """Walk -> two-hand pick -> walk -> two-hand place -> retreat. Returns 0 on success.
 
-    pr(f"WALK_TO_TABLE: walking to (1.45, 0.0) facing +x")
-    world.walk_to(np.array([1.45, 0.0]), yaw=0.0)
+    Pass ``hand="left"`` or ``"right"`` for a single-hand variant.
+    """
+    pr = (lambda *a, **k: print("[g1_sim]", *a, **k)) if verbose else (lambda *a, **k: None)
+    pr(f"hand mode: {hand}")
+
+    # Stand so the box is centered in front of the robot. The box sits at
+    # world (1.90, 0.15, 0.81); putting the pelvis at (1.45, 0.15) puts the
+    # box ~0.45 m forward and on the body centerline so the two hands can
+    # grasp opposite sides without crossing the midline.
+    if hand == "both":
+        walk_target_pickup = np.array([1.45, 0.15])
+        walk_target_place  = np.array([-2.45, -0.15])  # mirrors place_target.y
+    else:
+        walk_target_pickup = np.array([1.45, 0.0])
+        walk_target_place  = np.array([-2.45, 0.0])
+
+    pr(f"WALK_TO_TABLE: walking to {walk_target_pickup.tolist()} facing +x")
+    world.walk_to(walk_target_pickup, yaw=0.0)
 
     box = world.box_pos()
-    above = box + np.array([0.0, 0.0, 0.10])
-    grasp = box + np.array([0.0, 0.0, 0.04])
-    pr("PICK_APPROACH"); world.reach("left", above, tol=0.04)
-    pr("PICK_GRASP");    world.reach("left", grasp, tol=0.05)
-    world.grasp("left"); pr("grasping (attached to left hand)")
-    pr("PICK_LIFT");     world.reach("left", box + np.array([0.0, 0.0, 0.20]), tol=0.05)
+    if hand == "both":
+        side = 0.07
+        approach_l = box + np.array([0.0,  side, 0.10])
+        approach_r = box + np.array([0.0, -side, 0.10])
+        grasp_l    = box + np.array([0.0,  side, 0.04])
+        grasp_r    = box + np.array([0.0, -side, 0.04])
+        lift_l     = box + np.array([0.0,  side, 0.20])
+        lift_r     = box + np.array([0.0, -side, 0.20])
+
+        def both(lt: np.ndarray, rt: np.ndarray, label: str, tol: float = 0.05) -> None:
+            pr(label)
+            for _ in range(1500):
+                le = world.left_ik.step_to(world.data, lt)
+                re = world.right_ik.step_to(world.data, rt)
+                world.kine_tick()
+                if le < tol and re < tol:
+                    return
+
+        both(approach_l, approach_r, "PICK_APPROACH (both)")
+        both(grasp_l,    grasp_r,    "PICK_GRASP (both)")
+        world.grasp("both")
+        pr("grasping (both hands attached to box)")
+        both(lift_l, lift_r, "PICK_LIFT (both)", tol=0.06)
+    else:
+        above = box + np.array([0.0, 0.0, 0.10])
+        grasp = box + np.array([0.0, 0.0, 0.04])
+        pr("PICK_APPROACH"); world.reach(hand, above, tol=0.04)
+        pr("PICK_GRASP");    world.reach(hand, grasp, tol=0.05)
+        world.grasp(hand);   pr(f"grasping (attached to {hand} hand)")
+        pr("PICK_LIFT");     world.reach(hand, box + np.array([0.0, 0.0, 0.20]), tol=0.05)
     world.hold(30)
 
-    pr("WALK_TO_SHELF: walking to (-2.45, 0.0) facing -x")
-    world.walk_to(np.array([-2.45, 0.0]), yaw=math.pi)
+    pr(f"WALK_TO_SHELF: walking to {walk_target_place.tolist()} facing -x")
+    world.walk_to(walk_target_place, yaw=math.pi)
 
-    target = world.place_target_pos() + np.array([0.0, 0.0, 0.06])
-    pr("PLACE_APPROACH"); world.reach("left", target + np.array([0, 0, 0.10]), tol=0.05)
-    pr("PLACE_DOWN");     world.reach("left", target,                          tol=0.04)
-    world.release(); pr("released (detached from left hand)")
+    target = world.place_target_pos()
+    if hand == "both":
+        side = 0.07
+        app_l = target + np.array([0.0,  side, 0.16])
+        app_r = target + np.array([0.0, -side, 0.16])
+        pl_l  = target + np.array([0.0,  side, 0.06])
+        pl_r  = target + np.array([0.0, -side, 0.06])
+
+        def both(lt: np.ndarray, rt: np.ndarray, label: str, tol: float = 0.05) -> None:
+            pr(label)
+            for _ in range(1500):
+                le = world.left_ik.step_to(world.data, lt)
+                re = world.right_ik.step_to(world.data, rt)
+                world.kine_tick()
+                if le < tol and re < tol:
+                    return
+
+        both(app_l, app_r, "PLACE_APPROACH (both)")
+        both(pl_l,  pl_r,  "PLACE_DOWN (both)", tol=0.04)
+        world.release(); pr("released (detached from both hands)")
+    else:
+        place = target + np.array([0.0, 0.0, 0.06])
+        pr("PLACE_APPROACH"); world.reach(hand, place + np.array([0, 0, 0.10]), tol=0.05)
+        pr("PLACE_DOWN");     world.reach(hand, place,                          tol=0.04)
+        world.release(); pr(f"released (detached from {hand} hand)")
     world.settle_box(1.5)
 
     pr("RETREAT: walking back to (0, 0) facing +x")
@@ -1041,54 +1152,125 @@ class BoxCamDetector:
 def pickup_detected_box(
     world: G1World,
     detection: BoxDetection,
-    hand: Hand = "left",
+    hand: GraspMode = "both",
     *,
     approach_height: float = 0.10,
     grasp_height: float = 0.04,
     lift_height: float = 0.20,
+    side_offset: float = 0.07,
     tol: float = 0.07,
 ) -> bool:
-    """Reach the detected box pose with the given hand and grasp it.
+    """Reach for the detected box and grasp it. Two-handed by default.
 
-    Coordinates come from a `BoxCamDetector.detect()` result, not from a
-    privileged world lookup. The `tol` is intentionally loose (7 cm) since
-    HSV+ray-cast perception has multi-cm bias; the grasp itself succeeds as
-    long as the hand is roughly on top of the box. Returns True if the grasp
-    completed.
+    With ``hand="both"`` the left hand approaches the +y side of the box and
+    the right hand approaches the -y side, and both grasp simultaneously.
+    With ``hand="left"`` or ``hand="right"`` the original single-hand grasp
+    is used. Coordinates come from a `BoxCamDetector.detect()` result, not
+    from a privileged world lookup. The `tol` is intentionally loose since
+    monocular perception has multi-cm bias; the grasp itself succeeds as long
+    as the hand(s) end up wrapped around the box.
     """
     if not detection.found or detection.world_pos_confidence <= 0.0:
         return False
     base = np.asarray(detection.world_pos, dtype=float)
-    # Best-effort approach + descent. We accept the final hand pose as long
-    # as it ended up "near" the detected box (the rigid carry will snap the
-    # box rigidly to the wrist on grasp, mimicking a real gripper closing
-    # when it is roughly on top of the object).
-    world.reach(hand, base + np.array([0.0, 0.0, approach_height]), tol=tol, max_iters=2000)
-    _, err_final = world.reach(hand, base + np.array([0.0, 0.0, grasp_height]),
-                               tol=tol, max_iters=2000)
-    near_box = err_final < 0.12  # 12 cm: within "wrist over the box" envelope
-    if not near_box:
+
+    if hand in ("left", "right"):
+        world.reach(hand, base + np.array([0.0, 0.0, approach_height]),
+                    tol=tol, max_iters=2000)
+        _, err_final = world.reach(hand, base + np.array([0.0, 0.0, grasp_height]),
+                                   tol=tol, max_iters=2000)
+        if err_final >= 0.12:
+            return False
+        world.grasp(hand)  # type: ignore[arg-type]
+        world.reach(hand, base + np.array([0.0, 0.0, lift_height]),
+                    tol=tol, max_iters=2000)
+        return True
+
+    if hand != "both":
+        raise ValueError(f"hand must be left|right|both, got {hand!r}")
+
+    # ---------- two-handed grasp ----------
+    # Approach the +y / -y faces of the box at approach_height, then descend
+    # to grasp_height *simultaneously* by alternating IK ticks. The two arms
+    # share the floating base and waist, so doing them strictly serially can
+    # make the second one knock the first one out of place.
+    left_target_app  = base + np.array([0.0,  side_offset, approach_height])
+    right_target_app = base + np.array([0.0, -side_offset, approach_height])
+    left_target_g    = base + np.array([0.0,  side_offset, grasp_height])
+    right_target_g   = base + np.array([0.0, -side_offset, grasp_height])
+
+    def reach_both(lt: np.ndarray, rt: np.ndarray, max_iters: int = 1500) -> tuple[float, float]:
+        l_err = r_err = float("inf")
+        for _ in range(max_iters):
+            l_err = world.left_ik.step_to(world.data, lt)
+            r_err = world.right_ik.step_to(world.data, rt)
+            world.kine_tick()
+            if l_err < tol and r_err < tol:
+                return l_err, r_err
+        return l_err, r_err
+
+    le_app, re_app = reach_both(left_target_app, right_target_app)
+    le, re = reach_both(left_target_g, right_target_g)
+    # Accept as long as both hands ended up near the sides of the box.
+    if max(le, re) >= 0.14:
         return False
-    world.grasp(hand)
-    world.reach(hand, base + np.array([0.0, 0.0, lift_height]), tol=tol, max_iters=2000)
+    world.grasp("both")
+    # Lift with both hands together.
+    lift_left  = base + np.array([0.0,  side_offset, lift_height])
+    lift_right = base + np.array([0.0, -side_offset, lift_height])
+    reach_both(lift_left, lift_right)
     return True
 
 
 def place_detected_box(
     world: G1World,
-    hand: Hand = "left",
+    hand: GraspMode = "both",
     *,
     approach_height: float = 0.16,
     place_height: float = 0.06,
+    side_offset: float = 0.07,
     tol: float = 0.05,
     settle_seconds: float = 1.5,
 ) -> bool:
-    """Place whatever the given hand is holding on top of place_target."""
-    if world.held_by != hand:
+    """Place whatever's currently held on top of place_target.
+
+    With ``hand="both"`` (the default) the left hand goes to the +y side of
+    the place_target and the right hand to the -y side; both then descend
+    together. ``hand="left"`` or ``"right"`` falls back to the single-hand
+    motion.
+    """
+    if world.held_by != hand and not (hand == "both" and world.held_by == "both"):
         return False
     target = world.place_target_pos()
-    world.reach(hand, target + np.array([0.0, 0.0, approach_height]), tol=tol)
-    world.reach(hand, target + np.array([0.0, 0.0, place_height]),    tol=tol)
+
+    if hand in ("left", "right"):
+        world.reach(hand, target + np.array([0.0, 0.0, approach_height]), tol=tol)
+        world.reach(hand, target + np.array([0.0, 0.0, place_height]),    tol=tol)
+        world.release()
+        world.settle_box(seconds=settle_seconds)
+        return True
+
+    if hand != "both":
+        raise ValueError(f"hand must be left|right|both, got {hand!r}")
+
+    left_app  = target + np.array([0.0,  side_offset, approach_height])
+    right_app = target + np.array([0.0, -side_offset, approach_height])
+    left_pl   = target + np.array([0.0,  side_offset, place_height])
+    right_pl  = target + np.array([0.0, -side_offset, place_height])
+
+    def reach_both(lt: np.ndarray, rt: np.ndarray, max_iters: int = 1500) -> None:
+        for _ in range(max_iters):
+            l_err = world.left_ik.step_to(world.data, lt)
+            r_err = world.right_ik.step_to(world.data, rt)
+            world.kine_tick()
+            if l_err < tol and r_err < tol:
+                return
+
+    reach_both(left_app, right_app)
+    reach_both(left_pl, right_pl)
+    # The box has been riding in pelvis frame the whole time, so its world
+    # pose at this moment is already the desired drop pose between the two
+    # hands. Just release and let gravity do the rest.
     world.release()
     world.settle_box(seconds=settle_seconds)
     return True

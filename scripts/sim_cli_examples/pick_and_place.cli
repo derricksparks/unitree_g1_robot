@@ -13,20 +13,25 @@ status
 # 1. Walk to the table.
 goto table
 
-# 2. Reach above the box, descend onto it, grasp.
-reach left box.x box.y box.z+0.10
-reach left box.x box.y box.z+0.04
-grasp left
+# 2. Reach each hand to opposite sides of the box and grasp with BOTH hands.
+reach left  box.x box.y+0.07 box.z+0.10
+reach right box.x box.y-0.07 box.z+0.10
+reach left  box.x box.y+0.07 box.z+0.04
+reach right box.x box.y-0.07 box.z+0.04
+grasp both
 
-# 3. Lift the box clear of the table.
-reach left box.x box.y box.z+0.20
+# 3. Lift the box clear of the table (both hands).
+reach left  box.x box.y+0.07 box.z+0.20
+reach right box.x box.y-0.07 box.z+0.20
 
-# 4. Walk to the shelf (carrying the box).
+# 4. Walk to the shelf (carrying the box between both hands).
 goto shelf
 
-# 5. Reach above the place target, lower the box, release, let gravity settle.
-reach left target.x target.y target.z+0.16
-reach left target.x target.y target.z+0.06
+# 5. Reach both hands to opposite sides of the place target, lower, release.
+reach left  target.x target.y+0.07 target.z+0.16
+reach right target.x target.y-0.07 target.z+0.16
+reach left  target.x target.y+0.07 target.z+0.06
+reach right target.x target.y-0.07 target.z+0.06
 release
 settle 1.5
 

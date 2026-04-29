@@ -265,13 +265,14 @@ class G1Cli(cmd.Cmd):
         return False
 
     def do_grasp(self, arg: str) -> bool:
-        """grasp <left|right>      Attach the box rigidly to the chosen hand."""
-        hand = arg.strip().lower()
-        if hand not in ("left", "right"):
-            self._err("usage: grasp <left|right>"); return False
+        """grasp <left|right|both>      Attach the box rigidly to the chosen hand(s)."""
+        hand = arg.strip().lower() or "both"
+        if hand not in ("left", "right", "both"):
+            self._err("usage: grasp <left|right|both>"); return False
         with self._lock:
             self.world.grasp(hand)  # type: ignore[arg-type]
-        self._ok(f"box now held by {hand} hand")
+        label = "both hands" if hand == "both" else f"{hand} hand"
+        self._ok(f"box now held by {label}")
         return False
 
     def do_release(self, _arg: str) -> bool:
@@ -474,13 +475,13 @@ box show                Print box pose."""
         return False
 
     def do_pickup(self, arg: str) -> bool:
-        """pickup [left|right]     Reach the LAST detected box and grasp it.
+        """pickup [left|right|both]   Reach the LAST detected box and grasp it.
 
-        Runs `detect` first if no detection is active. Gated on a successful
-        camera detection: this is what the user-facing 'prompt' workflow uses."""
-        hand = (arg.strip().lower() or "left")
-        if hand not in ("left", "right"):
-            self._err("usage: pickup [left|right]"); return False
+        Default is BOTH hands. Runs `detect` first if no detection is
+        active. Gated on a successful camera detection."""
+        hand = (arg.strip().lower() or "both")
+        if hand not in ("left", "right", "both"):
+            self._err("usage: pickup [left|right|both]"); return False
         if self.last_detection is None or not self.last_detection.found:
             self.do_detect("")
         if self.last_detection is None or not self.last_detection.found:
@@ -491,10 +492,12 @@ box show                Print box pose."""
         return False
 
     def do_place(self, arg: str) -> bool:
-        """place [left|right]      Place the carried box on the place_target."""
-        hand = (arg.strip().lower() or self.world.held_by or "left")
-        if hand not in ("left", "right"):
-            self._err("usage: place [left|right]"); return False
+        """place [left|right|both]    Place the carried box on the place_target.
+
+        Default matches whatever's currently being held (or BOTH if nothing)."""
+        hand = (arg.strip().lower() or self.world.held_by or "both")
+        if hand not in ("left", "right", "both"):
+            self._err("usage: place [left|right|both]"); return False
         with self._lock:
             ok = place_detected_box(self.world, hand=hand)
         self._ok(f"PLACE ok; box={self.world.box_pos().round(3).tolist()}") if ok else self._err("PLACE failed")

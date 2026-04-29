@@ -218,12 +218,12 @@ class TeleopApp:
         if head == "detect":
             self._do_detect()
         elif head in ("pickup", "pick"):
-            hand = toks[1] if len(toks) > 1 else (self.active_arm or "left")
+            hand = toks[1] if len(toks) > 1 else (self.active_arm or "both")
             self._do_pickup(hand)
         elif head == "release":
             self._do_release()
         elif head == "place":
-            hand = toks[1] if len(toks) > 1 else (self.active_arm or self.world.held_by or "left")
+            hand = toks[1] if len(toks) > 1 else (self.world.held_by or self.active_arm or "both")
             self._do_place(hand)
         elif head == "reset":
             self.world.reset()
@@ -327,8 +327,8 @@ class TeleopApp:
             print("[teleop] DETECT no red box visible")
 
     def _do_pickup(self, hand: str) -> None:
-        if hand not in ("left", "right"):
-            print("[teleop] pickup needs hand=left|right"); return
+        if hand not in ("left", "right", "both"):
+            print("[teleop] pickup needs hand=left|right|both"); return
         if self.last_detection is None or not self.last_detection.found:
             print("[teleop] no prior detection; running detect first")
             self._do_detect()
@@ -336,7 +336,8 @@ class TeleopApp:
                 print("[teleop] still no detection; aborting pickup"); return
         ok = pickup_detected_box(self.world, self.last_detection, hand=hand)  # type: ignore[arg-type]
         if ok:
-            print(f"[teleop] PICKUP ok; held by {hand} hand")
+            label = "both hands" if hand == "both" else f"{hand} hand"
+            print(f"[teleop] PICKUP ok; held by {label}")
         else:
             print("[teleop] PICKUP failed (out of reach or IK timeout)")
 
@@ -347,10 +348,10 @@ class TeleopApp:
         print("[teleop] released")
 
     def _do_place(self, hand: str) -> None:
-        if hand not in ("left", "right"):
-            print("[teleop] place needs hand=left|right"); return
+        if hand not in ("left", "right", "both"):
+            print("[teleop] place needs hand=left|right|both"); return
         if self.world.held_by != hand:
-            print(f"[teleop] {hand} hand isn't holding anything"); return
+            print(f"[teleop] {hand} isn't holding anything (held_by={self.world.held_by})"); return
         ok = place_detected_box(self.world, hand=hand)  # type: ignore[arg-type]
         print(f"[teleop] PLACE ok={ok}, box={self.world.box_pos().round(3).tolist()}")
 
@@ -540,7 +541,7 @@ class TeleopApp:
             for evt in ek + ej:
                 if   evt == "quit":          self._stop.set()
                 elif evt == "detect":        self._do_detect()
-                elif evt == "grasp":         self._do_pickup(self.active_arm or "left")
+                elif evt == "grasp":         self._do_pickup(self.active_arm or "both")
                 elif evt == "release":       self._do_release()
                 elif evt == "reset":         self._handle_text_command("reset")
                 elif evt == "record_toggle": self._toggle_record()

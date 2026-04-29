@@ -17,22 +17,26 @@
 
 status
 
-# 1. Drive forward at 0.9 m/s for 1.6s -> pelvis ~ (1.44, 0, 0)
-cmdvel 0.9 0 0 1.6
+# 1. Drive forward at 0.9 m/s for 1.6s, plus a touch of strafe so the
+#    pelvis ends up centered on the box (which is at world y=+0.15).
+cmdvel 0.9 0.1 0 1.6
 
 # 2. Detect the red box from the onboard camera.
 detect
 
 # 3. PICKUP via prompt (perception-gated; uses last_detection coordinates).
-pickup left
+#    Default is BOTH hands; pass `pickup left` or `pickup right` for one hand.
+pickup both
 
 # 4. Joystick-style: spin 180 degrees (yaw 1.5 rad/s for ~pi/1.5 = 2.1s).
 cmdvel 0 0 1.5 2.1
 
-# 5. Drive back toward the shelf.
-cmdvel 0.9 0 0 4.4
+# 5. Drive back toward the shelf, ending centered on place_target (y=-0.15).
+#    After the 180-deg turn, body-frame +x is world -x and body-frame +y
+#    is world -y, so a small +y strafe slides the body toward world y=-0.15.
+cmdvel 0.9 0.07 0 4.4
 
-# 6. PLACE the box on the place_target via prompt.
-place left
+# 6. PLACE the box on the place_target via prompt (both hands by default).
+place both
 status
 quit
