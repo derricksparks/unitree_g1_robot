@@ -201,10 +201,10 @@ class ArmIK:
 
 @dataclass
 class WalkParams:
-    speed_mps: float = 0.6      # base translation speed
-    yaw_rate: float = 1.0       # base yaw rate
-    arm_swing_amp: float = 0.25 # shoulder pitch swing amplitude (rad)
-    swing_freq_hz: float = 1.5
+    speed_mps: float = 0.9      # base translation speed (m/s)
+    yaw_rate: float = 1.5       # base yaw rate (rad/s)
+    arm_swing_amp: float = 0.30 # shoulder pitch swing amplitude (rad)
+    swing_freq_hz: float = 1.6
 
 
 def walk_step(
@@ -349,11 +349,14 @@ def main() -> int:
     # Frames: render via offscreen Renderer unless using interactive viewer.
     renderer = None
     video_writer = None
+    # Tracking camera: re-aimed every frame at the pelvis so the robot stays
+    # centered as it walks ~5 m between the table and shelf.
     cam = mujoco.MjvCamera()
     cam.lookat[:] = (0.0, 0.0, 0.9)
-    cam.distance = 3.5
+    cam.distance = 5.0
     cam.azimuth = 135.0
-    cam.elevation = -15.0
+    cam.elevation = -18.0
+    pelvis_b = body_id(model, "pelvis")
 
     if not args.headless and not args.viewer and not args.no_video:
         try:
@@ -380,6 +383,11 @@ def main() -> int:
         if viewer_handle is not None:
             viewer_handle.sync()
         if renderer is not None and (n_frames[0] % n_render_every == 0):
+            # Smoothly track the pelvis with the camera so long walks stay in frame.
+            p = data.xpos[pelvis_b]
+            cam.lookat[0] = 0.7 * cam.lookat[0] + 0.3 * float(p[0])
+            cam.lookat[1] = 0.7 * cam.lookat[1] + 0.3 * float(p[1])
+            cam.lookat[2] = 0.9
             renderer.update_scene(data, camera=cam)
             video_writer.append_data(renderer.render())
 
@@ -461,9 +469,10 @@ def main() -> int:
         return ok
 
     # ----------------- 1) Walk to the table (box pickup spot) ----------------
-    # Box is at world (0.45, 0.15, 0.81). Stand at (0.0, 0.0) facing +x so the
-    # left hand (default world (~0.3, 0.15, 0.89) at ready pose) is in reach.
-    advance_to_target(np.array([0.0, 0.0]), yaw=0.0, label="WALK_TO_TABLE")
+    # Box is at world (1.90, 0.15, 0.81). Walk forward to (1.45, 0.0) facing
+    # +x so the left hand (which sits ~0.30 m forward of the pelvis at the
+    # ready pose) reaches the box.
+    advance_to_target(np.array([1.45, 0.0]), yaw=0.0, label="WALK_TO_TABLE")
     # Reset arm swing back to ready before manipulating.
     apply_pose(model, data, {
         "left_shoulder_pitch_joint":  READY_POSE["left_shoulder_pitch_joint"],
@@ -488,10 +497,10 @@ def main() -> int:
     hold_pose(model, data, 30, on_step=lambda: (update_carry(), on_step()))
 
     # ----------------- 3) Walk to the shelf (place spot) --------------------
-    # Shelf is at (-0.55, 0.0, ...). Turn 180° (face -x) and walk back so the
-    # shelf is in front. Stand at (0.0, 0.0) facing -x; place_target is at
-    # world (-0.55, 0.0, 0.83) which is ~0.55 m forward of the new facing.
-    advance_to_target(np.array([0.0, 0.0]), yaw=math.pi, label="WALK_TO_SHELF")
+    # Shelf is at (-3.0, 0.0, ...) and place_target at (-2.90, -0.15, 0.83).
+    # Turn 180° (face -x) and walk back to (-2.45, 0.0). The robot covers
+    # ~3.9 m of ground while carrying the box.
+    advance_to_target(np.array([-2.45, 0.0]), yaw=math.pi, label="WALK_TO_SHELF")
     apply_pose(model, data, {
         "left_shoulder_pitch_joint":  READY_POSE["left_shoulder_pitch_joint"],
         "right_shoulder_pitch_joint": READY_POSE["right_shoulder_pitch_joint"],
@@ -528,6 +537,7 @@ def main() -> int:
         del box_q, box_v, new_box_q, new_box_v
 
     # ---------------------------- 5) Retreat --------------------------------
+    # Walk back to the origin facing +x (toward the now-empty table).
     advance_to_target(np.array([0.0, 0.0]), yaw=0.0, label="RETREAT")
     hold_pose(model, data, 60, on_step=on_step)
 

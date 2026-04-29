@@ -247,8 +247,8 @@
     </body>
 
         <!-- ========== WAREHOUSE SCENE ========== -->
-    <!-- Reception Table (static: no joint => welded to world) -->
-    <body name="reception_table" pos="0.55 0.0 0.0">
+    <!-- Reception Table (static, in front of the robot at x=+2.0). -->
+    <body name="reception_table" pos="2.0 0.0 0.0">
         <geom name="table_top" type="box" size="0.30 0.30 0.02" pos="0 0 0.74" rgba="0.5 0.35 0.05 1"/>
         <geom name="table_leg1" type="cylinder" size="0.03 0.36" pos="-0.25 -0.25 0.36" rgba="0.4 0.25 0.1 1"/>
         <geom name="table_leg2" type="cylinder" size="0.03 0.36" pos=" 0.25 -0.25 0.36" rgba="0.4 0.25 0.1 1"/>
@@ -256,19 +256,19 @@
         <geom name="table_leg4" type="cylinder" size="0.03 0.36" pos=" 0.25  0.25 0.36" rgba="0.4 0.25 0.1 1"/>
     </body>
 
-    <!-- Pickable Red Box (free body so it can be grasped/dropped). Placed on the
-         near edge of the table on the robot's LEFT side so the left arm can
-         reach it without the body colliding with the table. -->
-    <body name="warehouse_box" pos="0.45 0.15 0.81">
+    <!-- Pickable Red Box on the near edge of the table on the robot's LEFT
+         side so the left arm can reach it. World pos = table_pos + offset. -->
+    <body name="warehouse_box" pos="1.90 0.15 0.81">
         <freejoint name="box_joint"/>
         <inertial pos="0 0 0" mass="1.0" diaginertia="0.0042 0.0042 0.0042"/>
         <geom name="box_geom" type="box" size="0.05 0.05 0.05" rgba="1 0.1 0.1 1" friction="1.5 0.05 0.001"/>
         <site name="box_site" pos="0 0 0" size="0.005" rgba="1 1 0 1"/>
     </body>
 
-    <!-- Storage Shelf (static) and a placement target on its bottom shelf.
-         Placed BEHIND the robot; we'll turn 180 deg to place the box. -->
-    <body name="storage_shelf" pos="-0.45 0.0 0.0">
+    <!-- Storage Shelf (static, behind the robot at x=-3.0). The robot will
+         walk ~1.5 m forward to the table, pick the box, then turn 180° and
+         walk ~2.5 m back to here to place. -->
+    <body name="storage_shelf" pos="-3.0 0.0 0.0">
         <geom name="shelf_bottom" type="box" size="0.25 0.25 0.02" pos="0 0 0.40" rgba="0.6 0.6 0.6 1"/>
         <geom name="shelf_middle" type="box" size="0.25 0.25 0.02" pos="0 0 0.80" rgba="0.6 0.6 0.6 1"/>
         <geom name="shelf_top"    type="box" size="0.25 0.25 0.02" pos="0 0 1.20" rgba="0.6 0.6 0.6 1"/>
@@ -276,9 +276,9 @@
         <geom name="shelf_leg2" type="cylinder" size="0.03 0.6" pos=" 0.22 -0.22 0.6" rgba="0.5 0.5 0.5 1"/>
         <geom name="shelf_leg3" type="cylinder" size="0.03 0.6" pos="-0.22  0.22 0.6" rgba="0.5 0.5 0.5 1"/>
         <geom name="shelf_leg4" type="cylinder" size="0.03 0.6" pos=" 0.22  0.22 0.6" rgba="0.5 0.5 0.5 1"/>
-        <!-- Place target on the middle shelf, offset toward where the robot's
-             LEFT hand will be after a 180-deg turn (world -y side). -->
-        <site name="place_target" pos="0.0 -0.15 0.83" size="0.05 0.05 0.001" type="box" rgba="0 1 0 0.3"/>
+        <!-- Place target on the middle shelf, on the LEFT side relative to the
+             post-turn pelvis (world -y), so the left hand naturally reaches. -->
+        <site name="place_target" pos="0.10 -0.15 0.83" size="0.05 0.05 0.001" type="box" rgba="0 1 0 0.3"/>
     </body>
     <!-- ========== END WAREHOUSE SCENE ========== -->
   </worldbody>
