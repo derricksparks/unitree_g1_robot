@@ -228,14 +228,21 @@ class feet_swing_height:
     env: ManagerBasedRlEnv,
     sensor_name: str,
     target_height: float,
-    command_name: str,
+    command_name: str | None,
     command_threshold: float,
     asset_cfg: SceneEntityCfg,
   ) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
     contact_sensor: ContactSensor = env.scene[sensor_name]
-    command = env.command_manager.get_command(command_name)
-    assert command is not None
+    if command_name is not None:
+      command = env.command_manager.get_command(command_name)
+      assert command is not None
+      linear_norm = torch.norm(command[:, :2], dim=1)
+      angular_norm = torch.abs(command[:, 2])
+      total_command = linear_norm + angular_norm
+      active = (total_command > command_threshold).float()
+    else:
+      active = torch.ones(env.num_envs, device=env.device, dtype=torch.float32)
     foot_heights = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]
     in_air = contact_sensor.data.found == 0
     self.peak_heights = torch.where(
@@ -244,10 +251,6 @@ class feet_swing_height:
       self.peak_heights,
     )
     first_contact = contact_sensor.compute_first_contact(dt=self.step_dt)
-    linear_norm = torch.norm(command[:, :2], dim=1)
-    angular_norm = torch.abs(command[:, 2])
-    total_command = linear_norm + angular_norm
-    active = (total_command > command_threshold).float()
     error = self.peak_heights / target_height - 1.0
     cost = torch.sum(torch.square(error) * first_contact.float(), dim=1) * active
     num_landings = torch.sum(first_contact.float())
@@ -267,19 +270,22 @@ class feet_swing_height:
 def feet_slip(
   env: ManagerBasedRlEnv,
   sensor_name: str,
-  command_name: str,
+  command_name: str | None,
   command_threshold: float = 0.01,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
   """Penalize foot sliding (xy velocity while in contact)."""
   asset: Entity = env.scene[asset_cfg.name]
   contact_sensor: ContactSensor = env.scene[sensor_name]
-  command = env.command_manager.get_command(command_name)
-  assert command is not None
-  linear_norm = torch.norm(command[:, :2], dim=1)
-  angular_norm = torch.abs(command[:, 2])
-  total_command = linear_norm + angular_norm
-  active = (total_command > command_threshold).float()
+  if command_name is not None:
+    command = env.command_manager.get_command(command_name)
+    assert command is not None
+    linear_norm = torch.norm(command[:, :2], dim=1)
+    angular_norm = torch.abs(command[:, 2])
+    total_command = linear_norm + angular_norm
+    active = (total_command > command_threshold).float()
+  else:
+    active = torch.ones(env.num_envs, device=env.device, dtype=torch.float32)
   assert contact_sensor.data.found is not None
   in_contact = (contact_sensor.data.found > 0).float()  # [B, N]
   foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]

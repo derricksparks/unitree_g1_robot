@@ -15,6 +15,12 @@ def reset_box_to_command(
   env_ids: torch.Tensor,
   command_name: str,
 ) -> None:
+  """Optional utility to write the box root state from the command buffer.
+
+  Do **not** register this as a reset-mode event: ``_reset_idx`` runs reset
+  events before ``command_manager.reset``, so ``box_start_pos_w`` is stale.
+  Box placement is handled in ``BoxTransportCommand._resample_command`` instead.
+  """
   command = env.command_manager.get_term(command_name)
   assert isinstance(command, BoxTransportCommand)
   box = env.scene["box"]

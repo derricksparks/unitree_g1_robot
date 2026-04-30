@@ -34,6 +34,15 @@ class BoxTransportCommand(CommandTerm):
       [self.box_start_pos_w, self.shelf_pos_w, self.stage.float().unsqueeze(-1)], dim=-1
     )
 
+  def _update_metrics(self) -> None:
+    try:
+      box = self._env.scene["box"]
+    except KeyError:
+      return
+    self.metrics["box_to_shelf"] = torch.norm(
+      box.data.root_link_pos_w[:, :3] - self.shelf_pos_w, dim=-1
+    )
+
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     if len(env_ids) == 0:
       return
@@ -58,15 +67,16 @@ class BoxTransportCommand(CommandTerm):
 
     self.stage[env_ids] = min(self.cfg.initial_stage, self.cfg.max_stage)
 
+    # Box pose must be written here: env reset events run *before* command_manager.reset,
+    # so a separate reset_box event would use stale box_start_pos_w (often zeros).
+    box = self._env.scene["box"]
+    root_state = torch.zeros((len(env_ids), 13), device=self.device)
+    root_state[:, :3] = self.box_start_pos_w[env_ids]
+    root_state[:, 3] = 1.0  # quat w = 1, body upright
+    box.write_root_state_to_sim(root_state, env_ids)
+
   def _update_command(self) -> None:
-    try:
-      box = self._env.scene["box"]
-    except KeyError:
-      box = None
-    if box is not None:
-      self.metrics["box_to_shelf"] = torch.norm(
-        box.data.root_link_pos_w[:, :3] - self.shelf_pos_w, dim=-1
-      )
+    pass
 
   def set_stage(self, stage: int) -> None:
     self.stage[:] = min(max(stage, 0), self.cfg.max_stage)

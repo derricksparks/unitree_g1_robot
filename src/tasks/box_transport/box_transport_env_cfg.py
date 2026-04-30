@@ -5,7 +5,6 @@ from dataclasses import replace
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
-from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -125,11 +124,6 @@ def make_g1_box_transport_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       action_scale[pattern] *= multiplier
   joint_pos_action.scale = action_scale
 
-  cfg.events["reset_box"] = EventTermCfg(
-    func=mdp.reset_box_to_command,
-    mode="reset",
-    params={"command_name": "box_transport"},
-  )
   cfg.events.pop("push_robot", None)
 
   # Drop velocity-tracking rewards and keep the stability core.
@@ -203,9 +197,12 @@ def make_g1_box_transport_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       ),
       "box_too_far": TerminationTermCfg(
         func=mdp.box_too_far,
-        params={"command_name": "box_transport"},
+        params={"command_name": "box_transport", "max_distance": 3.0},
       ),
-      "bad_torso_orientation": TerminationTermCfg(func=mdp.bad_torso_orientation),
+      "bad_torso_orientation": TerminationTermCfg(
+        func=mdp.bad_torso_orientation,
+        params={"threshold": 0.92},
+      ),
     }
   )
 
