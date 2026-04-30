@@ -3,8 +3,6 @@ file(REMOVE_RECURSE
   "CMakeFiles/g1_controller_lib.dir/src/State_Mimic.cpp.o.d"
   "CMakeFiles/g1_controller_lib.dir/src/State_RLBase.cpp.o"
   "CMakeFiles/g1_controller_lib.dir/src/State_RLBase.cpp.o.d"
-  "CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o"
-  "CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o.d"
   "libg1_controller_lib.a"
   "libg1_controller_lib.pdb"
 )
