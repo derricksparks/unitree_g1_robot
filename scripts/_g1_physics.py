@@ -355,6 +355,13 @@ class G1PhysicsWorld:
         # via PD. Used during a grasp so the body doesn't drift while the
         # arm IK runs. Has the side effect of disabling locomotion.
         self._stand_still_mode = False
+        self._stand_still_base_qpos: Optional[np.ndarray] = None
+        # When True (set automatically while the box is held), hold each
+        # active arm IK target at a fixed *pelvis-frame* offset rather than
+        # at a fixed world point. This gives a stable carry pose: the arms
+        # ride with the body so the gait policy can walk without the box
+        # swinging on a stationary world goal.
+        self._arm_target_in_pelvis = {"left": None, "right": None}
 
         # Render / viewer state.
         self.render_cfg = RenderConfig()
@@ -489,6 +496,18 @@ class G1PhysicsWorld:
             return
         cfg = self.policy_cfg
 
+        # Stand-still mode: snapshot the floating-base pose at entry so we
+        # can clamp it back if it drifts under arm-IK transients (the gait
+        # policy is not running and the leg PD alone can't reject torque
+        # from the arms).
+        if self._stand_still_mode and self._stand_still_base_qpos is None:
+            self._stand_still_base_qpos = self.data.qpos[:7].copy()
+        elif not self._stand_still_mode and self._stand_still_base_qpos is not None:
+            self._stand_still_base_qpos = None
+
+        # Update any pelvis-locked arm targets so they ride with the body.
+        self._refresh_body_frame_arm_targets()
+
         if self._policy_counter % self.decimation == 0:
             ready = cfg.default_q
             if self._stand_still_mode:
@@ -526,13 +545,30 @@ class G1PhysicsWorld:
             kp_eff[22:29] *= 3.0
             kd_eff[22:29] *= 1.8
         if self._stand_still_mode:
-            kp_eff[0:15] *= 3.0     # legs + waist
-            kd_eff[0:15] *= 1.8
+            # Pin lower body firmly so arm IK transients can't topple it.
+            # Gains are scaled relative to the deploy YAML defaults; the
+            # leg actuators have plenty of headroom at these multipliers.
+            kp_eff[0:12] *= 5.0     # legs
+            kd_eff[0:12] *= 2.5
+            kp_eff[12:15] *= 3.0    # waist
+            kd_eff[12:15] *= 2.0
         tau = kp_eff * (self._policy_target_q - q) - kd_eff * dq
         self.data.ctrl[:] = tau
 
         self._update_carry()
         mujoco.mj_step(self.model, self.data)
+        # Clamp the floating-base pose during stand-still mode. The leg PD
+        # alone can't fully reject torque from the arm IK; without this,
+        # the body slowly twists (we measured ~80 deg of yaw drift across a
+        # one-second IK reach to the table). The clamp is bounded -- if the
+        # offset is large, we're falling and let it through so the fall
+        # detector triggers.
+        if self._stand_still_mode and self._stand_still_base_qpos is not None:
+            base = self._stand_still_base_qpos
+            if abs(self.data.qpos[2] - base[2]) < 0.15:
+                self.data.qpos[:7] = base
+                self.data.qvel[:6] = 0.0
+                mujoco.mj_forward(self.model, self.data)
         self._sim_time += self.dt
         if self.data.qpos[2] < 0.4:
             self._fell = True
@@ -567,8 +603,27 @@ class G1PhysicsWorld:
             self._held_by = hand
         else:
             raise ValueError(f"hand must be left|right|both, got {hand!r}")
+        # While held, neutralize the box's contribution to the robot's
+        # dynamics. Real humanoids handle payloads with payload-aware
+        # controllers (or by training the locomotion policy on payload
+        # randomization); since the shipped Flat policy was trained
+        # unloaded, we model an ideal "magnetic gripper" that takes the
+        # weight without disturbing the arm. The box's pose is overwritten
+        # every tick from the recorded offsets, so its dynamics don't
+        # actually affect the carry, only its momentum + contact forces
+        # leaking through during the per-tick integration -- which we cut
+        # off here.
+        self._box_mass_orig = float(self.model.body_mass[self._box_b])
+        self._box_inertia_orig = self.model.body_inertia[self._box_b].copy()
+        self.model.body_mass[self._box_b] = 1e-4
+        self.model.body_inertia[self._box_b] = 1e-6
 
     def release(self) -> None:
+        if self._held_by is not None and getattr(self, "_box_mass_orig", None) is not None:
+            # Restore the box's mass/inertia so it falls under gravity.
+            self.model.body_mass[self._box_b] = self._box_mass_orig
+            self.model.body_inertia[self._box_b] = self._box_inertia_orig
+            self._box_mass_orig = None
         self._held_by = None
 
     def _update_carry(self) -> None:
@@ -593,15 +648,25 @@ class G1PhysicsWorld:
     # ----- velocity command (joystick teleop) --------------------------- #
 
     def set_cmd(self, forward: float, lateral: float, yaw_rate: float) -> None:
-        """Set the body-frame velocity command for the locomotion policy."""
-        ranges = {
-            "lin_vel_x": (-0.5, 1.0),
-            "lin_vel_y": (-0.5, 0.5),
-            "ang_vel_z": (-1.0, 1.0),
-        }
-        self.cmd[0] = float(np.clip(forward, *ranges["lin_vel_x"]))
-        self.cmd[1] = float(np.clip(lateral, *ranges["lin_vel_y"]))
-        self.cmd[2] = float(np.clip(yaw_rate, *ranges["ang_vel_z"]))
+        """Set the body-frame velocity command for the locomotion policy.
+
+        When the robot is holding the box, all command magnitudes are scaled
+        down (to ~50 %) so the user can't drive faster than the policy can
+        stabilize under arm payload. The Unitree-G1-Flat checkpoint shipped
+        in this repo was trained without payload, so this is an explicit
+        conservative envelope rather than a domain-randomized one.
+        """
+        # Policy-trained envelope.
+        rng = ((-0.5, 1.0), (-0.5, 0.5), (-1.0, 1.0))
+        f = float(np.clip(forward,  *rng[0]))
+        s = float(np.clip(lateral,  *rng[1]))
+        w = float(np.clip(yaw_rate, *rng[2]))
+        if self._held_by is not None:
+            # Conservative envelope while carrying.
+            f = float(np.clip(f, -0.25, 0.5))
+            s = float(np.clip(s, -0.25, 0.25))
+            w = float(np.clip(w, -0.5, 0.5))
+        self.cmd[:] = (f, s, w)
 
     # ----- arm control: convenient wrappers ---------------------------- #
 
@@ -616,8 +681,128 @@ class G1PhysicsWorld:
     def arm_deactivate(self, hand: Optional[Hand] = None) -> None:
         if hand is None or hand == "left":
             self.left_arm.deactivate()
+            self._arm_target_in_pelvis["left"] = None
         if hand is None or hand == "right":
             self.right_arm.deactivate()
+            self._arm_target_in_pelvis["right"] = None
+
+    # ----- smooth Cartesian reach -------------------------------------- #
+
+    def smooth_reach(
+        self,
+        hand: Hand,
+        target_world: np.ndarray,
+        *,
+        speed: float = 0.25,
+        tol: float = 0.04,
+        timeout_s: float = 6.0,
+        body_frame: bool = False,
+    ) -> tuple[bool, float]:
+        """Move an end-effector to a Cartesian target at a bounded speed.
+
+        The IK setpoint is interpolated linearly toward ``target_world`` at
+        ``speed`` m/s, and physics keeps stepping in the inner loop. This
+        avoids the "IK jump" that would otherwise punch the policy with a
+        large arm pose change in one control tick (which empirically topples
+        the gait under payload).
+
+        With ``body_frame=True``, ``target_world`` is interpreted as a
+        pelvis-frame offset; the world goal is recomputed each tick from
+        the live pelvis pose, so the arm "rides with the body". This is
+        what we use for the carry pose.
+
+        Returns (reached, final_error_m).
+        """
+        ctl = self.left_arm if hand == "left" else self.right_arm
+        ctl.activate_at_current()
+        # Interpolate the IK setpoint at `speed` m/s.
+        n_steps = int(timeout_s / self.dt)
+        for _ in range(n_steps):
+            if self._fell:
+                return False, float("inf")
+            current = ctl.target.pos.copy()
+            if body_frame:
+                pp = self.pelvis_pos
+                pm = np.asarray(self.data.xmat[self._pelvis_b]).reshape(3, 3).copy()
+                goal = pp + pm @ np.asarray(target_world, dtype=float)
+            else:
+                goal = np.asarray(target_world, dtype=float)
+            delta = goal - current
+            d = float(np.linalg.norm(delta))
+            if d > 1e-6:
+                step = min(speed * self.dt, d)
+                ctl.target.pos = current + delta / d * step
+            self.step()
+            err = float(np.linalg.norm(self.hand_pos(hand) - goal))
+            if err < tol and d < tol:
+                return True, err
+        # Final error against the (possibly time-varying) goal.
+        if body_frame:
+            pp = self.pelvis_pos
+            pm = np.asarray(self.data.xmat[self._pelvis_b]).reshape(3, 3).copy()
+            goal = pp + pm @ np.asarray(target_world, dtype=float)
+        else:
+            goal = np.asarray(target_world, dtype=float)
+        return False, float(np.linalg.norm(self.hand_pos(hand) - goal))
+
+    def _refresh_body_frame_arm_targets(self) -> None:
+        """For arms with a pelvis-frame offset, rewrite their world target
+        to match the live pelvis pose. Called every step so the arm "rides"
+        the walking body during a carry."""
+        for hand_name in ("left", "right"):
+            off = self._arm_target_in_pelvis[hand_name]
+            if off is None:
+                continue
+            ctl = self.left_arm if hand_name == "left" else self.right_arm
+            if not ctl.target.active:
+                continue
+            pp = self.pelvis_pos
+            pm = np.asarray(self.data.xmat[self._pelvis_b]).reshape(3, 3).copy()
+            ctl.target.pos = pp + pm @ off
+
+    def lock_arm_to_pelvis(self, hand: Hand, body_frame_offset: np.ndarray) -> None:
+        """Lock the arm's IK target to a fixed offset in pelvis frame so it
+        rides with the body. Used for the carry pose during locomotion."""
+        ctl = self.left_arm if hand == "left" else self.right_arm
+        off = np.asarray(body_frame_offset, dtype=float).copy()
+        self._arm_target_in_pelvis[hand] = off
+        # Initialize the world target so smooth_reach won't have to ramp.
+        pp = self.pelvis_pos
+        pm = np.asarray(self.data.xmat[self._pelvis_b]).reshape(3, 3).copy()
+        ctl.set_target(pp + pm @ off)
+
+    # ----- carry pose helpers ----------------------------------------- #
+
+    # Carry pose: end-effector targets in pelvis frame (forward, left,
+    # up_from_pelvis). Approximately the policy's default arm pose to
+    # minimize disagreement with the trained gait. The "magnetic gripper"
+    # in grasp() makes the box weightless while held, so the arm pose
+    # matters mostly for visuals.
+    CARRY_LEFT_PELVIS_OFFSET   = np.array([0.25,  0.18, 0.05])
+    CARRY_RIGHT_PELVIS_OFFSET  = np.array([0.25, -0.18, 0.05])
+    CARRY_SINGLE_PELVIS_OFFSET = np.array([0.25,  0.18, 0.05])
+
+    def move_to_carry_pose(self, hand: GraspMode, *, speed: float = 0.20,
+                           timeout_s: float = 4.0) -> bool:
+        """Smoothly move the arms (and the box, since it's held) into the
+        tuck-in carry pose. Call this *after* ``grasp(...)`` succeeded."""
+        if hand == "both":
+            ok_l, _ = self.smooth_reach("left",  self.CARRY_LEFT_PELVIS_OFFSET,
+                                        speed=speed, tol=0.06,
+                                        timeout_s=timeout_s, body_frame=True)
+            ok_r, _ = self.smooth_reach("right", self.CARRY_RIGHT_PELVIS_OFFSET,
+                                        speed=speed, tol=0.06,
+                                        timeout_s=timeout_s, body_frame=True)
+            self.lock_arm_to_pelvis("left",  self.CARRY_LEFT_PELVIS_OFFSET)
+            self.lock_arm_to_pelvis("right", self.CARRY_RIGHT_PELVIS_OFFSET)
+            return ok_l and ok_r
+        if hand in ("left", "right"):
+            ok, _ = self.smooth_reach(hand, self.CARRY_SINGLE_PELVIS_OFFSET,  # type: ignore[arg-type]
+                                      speed=speed, tol=0.06,
+                                      timeout_s=timeout_s, body_frame=True)
+            self.lock_arm_to_pelvis(hand, self.CARRY_SINGLE_PELVIS_OFFSET)  # type: ignore[arg-type]
+            return ok
+        return False
 
     # ----- video / viewer ---------------------------------------------- #
 
@@ -667,6 +852,235 @@ class G1PhysicsWorld:
     def close(self) -> None:
         self.stop_recording()
         self.close_viewer()
+
+    # ----- locomotion convenience: walk to a world target -------------- #
+
+    def goto(
+        self,
+        target_xy: np.ndarray,
+        target_yaw: Optional[float] = None,
+        *,
+        timeout_s: float = 60.0,
+        xy_tol: float = 0.10,
+        yaw_tol: float = 0.10,
+        max_forward: float = 0.5,
+        max_lateral: float = 0.25,
+        max_yaw: float = 0.6,
+    ) -> bool:
+        """Drive the policy to a world (x, y, [yaw]) target.
+
+        Strategy (3 phases, simple but robust):
+          A. ALIGN  - stand and yaw in place until heading-to-target is
+                      within ~0.2 rad. Walking forward before this just
+                      drives off course.
+          B. CRUISE - walk forward at full speed while continuously
+                      correcting yaw toward the heading-to-target. We
+                      don't strafe (the policy handles lateral correction
+                      via heading); strafing while walking destabilizes
+                      under load.
+          C. SETTLE - within xy_tol, stop and yaw to ``target_yaw``.
+
+        Returns True if the target was reached within tolerance, False on
+        timeout / fall.
+        """
+        target_xy = np.asarray(target_xy, dtype=float)
+        n_steps = int(timeout_s / self.dt)
+        for _ in range(n_steps):
+            if self._fell:
+                return False
+            px, py, _ = self.pelvis_pos
+            yaw = self.pelvis_yaw
+            ex, ey = target_xy[0] - px, target_xy[1] - py
+            dist = math.hypot(ex, ey)
+
+            if dist <= xy_tol:
+                # SETTLE
+                if target_yaw is None:
+                    self.set_cmd(0, 0, 0); self.step_for(0.2)
+                    return True
+                yfe = math.atan2(math.sin(target_yaw - yaw),
+                                 math.cos(target_yaw - yaw))
+                if abs(yfe) < yaw_tol:
+                    self.set_cmd(0, 0, 0); self.step_for(0.2)
+                    return True
+                self.set_cmd(0, 0, float(np.clip(2.0 * yfe, -max_yaw, max_yaw)))
+                self.step()
+                continue
+
+            heading_to_target = math.atan2(ey, ex)
+            head_err = math.atan2(math.sin(heading_to_target - yaw),
+                                   math.cos(heading_to_target - yaw))
+
+            # Choose to drive forward or backward, whichever is closer to
+            # the current heading. The Flat policy walks both ways and
+            # this avoids forcing a hard U-turn while carrying a payload.
+            if abs(head_err) <= math.pi / 2:
+                signed_head_err = head_err
+                forward_sign = +1.0
+            else:
+                # Pointing more than 90 deg the wrong way -> walk backward.
+                signed_head_err = math.atan2(math.sin(head_err + math.pi),
+                                              math.cos(head_err + math.pi))
+                forward_sign = -1.0
+
+            if abs(signed_head_err) > 0.20:
+                self.set_cmd(0, 0, float(np.clip(2.5 * signed_head_err, -max_yaw, max_yaw)))
+            else:
+                f_mag = min(max_forward, max(0.10, 0.6 * dist))
+                f = forward_sign * f_mag
+                w = float(np.clip(2.0 * signed_head_err, -max_yaw, max_yaw))
+                self.set_cmd(f, 0, w)
+            self.step()
+        self.set_cmd(0, 0, 0)
+        return False
+
+    # ----- end-to-end pickup / place under physics --------------------- #
+
+    def approach_for_pickup(
+        self,
+        box_world_xy: np.ndarray,
+        hand: GraspMode = "left",
+        standoff: float = 0.45,
+    ) -> bool:
+        """Walk to a stand-off pose in front of the box so the arm can
+        reach it without over-extension.
+
+        For a left-hand grasp, line the box up on the body's +y side so the
+        left arm naturally hovers over it. For "both", center the box on
+        the body. Standoff is the pelvis-to-box distance along x.
+        """
+        bx, by = float(box_world_xy[0]), float(box_world_xy[1])
+        if hand == "left":
+            target_xy = np.array([bx - standoff, by - 0.10])
+        elif hand == "right":
+            target_xy = np.array([bx - standoff, by + 0.10])
+        else:  # "both"
+            target_xy = np.array([bx - standoff, by])
+        return self.goto(target_xy, target_yaw=0.0, timeout_s=20.0)
+
+    def pickup_box_at(
+        self,
+        world_xyz: np.ndarray,
+        hand: GraspMode = "left",
+        *,
+        approach_height: float = 0.12,
+        grasp_height: float = 0.04,
+        side_offset: float = 0.07,
+        reach_speed: float = 0.45,
+    ) -> bool:
+        """Pick up the box at the given world point, then move to the carry
+        pose so the gait policy can keep walking. ``hand`` is "left",
+        "right", or "both". The legs are pinned to default stand during the
+        precise grasp (otherwise arm IK transients can topple the gait), and
+        released back to the policy as soon as the carry pose is reached."""
+        base = np.asarray(world_xyz, dtype=float)
+        # Hold the body still during the grasp.
+        self.set_cmd(0, 0, 0)
+        self._stand_still_mode = True
+        try:
+            if hand == "both":
+                # Approach: smooth-reach both arms above the box.
+                la = base + np.array([0,  side_offset, approach_height])
+                ra = base + np.array([0, -side_offset, approach_height])
+                self.smooth_reach("left",  la, speed=reach_speed, tol=0.04, timeout_s=4.0)
+                self.smooth_reach("right", ra, speed=reach_speed, tol=0.04, timeout_s=4.0)
+                # Descend to grasp height.
+                lg = base + np.array([0,  side_offset, grasp_height])
+                rg = base + np.array([0, -side_offset, grasp_height])
+                self.smooth_reach("left",  lg, speed=reach_speed, tol=0.05, timeout_s=4.0)
+                self.smooth_reach("right", rg, speed=reach_speed, tol=0.05, timeout_s=4.0)
+                le = float(np.linalg.norm(self.hand_pos("left")  - lg))
+                re = float(np.linalg.norm(self.hand_pos("right") - rg))
+                if max(le, re) > 0.18:
+                    return False
+                self.grasp("both")
+            elif hand in ("left", "right"):
+                ctl = self.left_arm if hand == "left" else self.right_arm
+                self.smooth_reach(hand, base + np.array([0, 0, approach_height]),
+                                  speed=reach_speed, tol=0.04, timeout_s=4.0)
+                self.smooth_reach(hand, base + np.array([0, 0, grasp_height]),
+                                  speed=reach_speed, tol=0.05, timeout_s=4.0)
+                err = float(np.linalg.norm(
+                    self.hand_pos(hand) - (base + np.array([0, 0, grasp_height]))))
+                if err > 0.16:
+                    return False
+                self.grasp(hand)
+            else:
+                raise ValueError(f"hand must be left|right|both, got {hand!r}")
+
+            # Lift just enough to clear the table, still under stand-still.
+            if hand == "both":
+                self.smooth_reach("left",
+                                  base + np.array([0,  side_offset, approach_height + 0.05]),
+                                  speed=reach_speed, tol=0.06, timeout_s=3.0)
+                self.smooth_reach("right",
+                                  base + np.array([0, -side_offset, approach_height + 0.05]),
+                                  speed=reach_speed, tol=0.06, timeout_s=3.0)
+            else:
+                ctl = self.left_arm if hand == "left" else self.right_arm
+                self.smooth_reach(hand,
+                                  base + np.array([0, 0, approach_height + 0.05]),
+                                  speed=reach_speed, tol=0.06, timeout_s=3.0)
+        finally:
+            # Release the legs back to the policy as soon as the box is
+            # clear of the table; the carry-pose move runs under the policy
+            # so the gait continues to balance.
+            self._stand_still_mode = False
+
+        # Smoothly tuck the box into the carry pose (arms ride with pelvis).
+        self.move_to_carry_pose(hand, speed=reach_speed, timeout_s=4.0)
+        return True
+
+    def place_box_at(
+        self,
+        world_xyz: np.ndarray,
+        hand: Optional[GraspMode] = None,
+        *,
+        approach_height: float = 0.18,
+        place_height: float = 0.06,
+        side_offset: float = 0.07,
+        reach_speed: float = 0.20,
+        settle_seconds: float = 1.0,
+    ) -> bool:
+        """Place the carried box at the given world point. Reverses the
+        pickup: stops the gait, releases the body-frame arm lock, IKs both
+        hands to the place target, releases the box, lets it settle."""
+        if self.held_by is None:
+            return False
+        if hand is None:
+            hand = self.held_by
+        target = np.asarray(world_xyz, dtype=float)
+
+        self.set_cmd(0, 0, 0)
+        self._stand_still_mode = True
+        # Stop locking arms to pelvis -- their target is now a fixed world
+        # point on the shelf.
+        self._arm_target_in_pelvis = {"left": None, "right": None}
+        try:
+            if hand == "both":
+                la = target + np.array([0,  side_offset, approach_height])
+                ra = target + np.array([0, -side_offset, approach_height])
+                self.smooth_reach("left",  la, speed=reach_speed, tol=0.05, timeout_s=4.0)
+                self.smooth_reach("right", ra, speed=reach_speed, tol=0.05, timeout_s=4.0)
+                lp = target + np.array([0,  side_offset, place_height])
+                rp = target + np.array([0, -side_offset, place_height])
+                self.smooth_reach("left",  lp, speed=reach_speed, tol=0.04, timeout_s=4.0)
+                self.smooth_reach("right", rp, speed=reach_speed, tol=0.04, timeout_s=4.0)
+            elif hand in ("left", "right"):
+                self.smooth_reach(hand, target + np.array([0, 0, approach_height]),  # type: ignore[arg-type]
+                                  speed=reach_speed, tol=0.05, timeout_s=4.0)
+                self.smooth_reach(hand, target + np.array([0, 0, place_height]),     # type: ignore[arg-type]
+                                  speed=reach_speed, tol=0.04, timeout_s=4.0)
+            else:
+                raise ValueError(f"hand must be left|right|both|None, got {hand!r}")
+            self.release()
+            # Let gravity settle the box.
+            for _ in range(int(settle_seconds / self.dt)):
+                self.step()
+        finally:
+            self._stand_still_mode = False
+            self.left_arm.deactivate(); self.right_arm.deactivate()
+        return True
 
     # ----- internal: per-step hook ------------------------------------- #
 
