@@ -12,10 +12,6 @@ endif()
 list(APPEND CMAKE_PREFIX_PATH "/opt/unitree_robotics/lib/cmake")
 find_package(unitree_sdk2 REQUIRED)
 find_package(Boost REQUIRED COMPONENTS program_options)
-find_package(Eigen3 REQUIRED)
-#if (Eigen3_FOUND)
-  #include_directories(${EIGEN3_INCLUDE_DIR})
-#endif()
 
 
 include_directories(
@@ -27,7 +23,6 @@ link_directories(mujoco/lib)
 
 file(GLOB SIM_SRC
   src/joystick/joystick.cc
-  src/camera_publisher.h
 
   # exclude mujoco/simulate/main.cc
   mujoco/simulate/glfw_*.cc

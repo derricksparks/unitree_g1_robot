@@ -10,7 +10,6 @@
 #include <unitree/idl/hg/IMUState_.hpp>
 
 #include <iostream>
-#include <cmath>
 
 #include "param.h"
 #include "physics_joystick.h"
@@ -32,10 +31,9 @@ public:
                 joystick = std::make_shared<XBoxJoystick>(param::config.joystick_device, param::config.joystick_bits);
             } else if(param::config.joystick_type == "switch") {
                 joystick  = std::make_shared<SwitchJoystick>(param::config.joystick_device, param::config.joystick_bits);
-            } else if(param::config.joystick_type== "sony") {
-                joystick = std::make_shared<SonyJoystick>(param::config.joystick_device, param::config.joystick_bits);}
-
-            else {
+            } else if(param::config.joystick_type == "sony") {
+                joystick = std::make_shared<SonyJoystick>(param::config.joystick_device, param::config.joystick_bits);
+            } else {
                 std::cerr << "Unsupported joystick type: " << param::config.joystick_type << std::endl;
                 exit(EXIT_FAILURE);
             }
@@ -61,11 +59,11 @@ public:
             }
             std::cout << std::endl;
         };
-
+    
         printObjects("Link", mj_model_->nbody, mjOBJ_BODY, [](int i) { return i; });
         printObjects("Joint", mj_model_->njnt, mjOBJ_JOINT, [](int i) { return i; });
         printObjects("Actuator", mj_model_->nu, mjOBJ_ACTUATOR, [](int i) { return i; });
-
+    
         int sensorIndex = 0;
         printObjects("Sensor", mj_model_->nsensor, mjOBJ_SENSOR, [&](int i) {
             int currentIndex = sensorIndex;
@@ -98,34 +96,34 @@ protected:
     {
         num_motor_ = mj_model_->nu;
         dim_motor_sensor_ = MOTOR_SENSOR_NUM * num_motor_;
-
+    
         // Find sensor addresses by name
         int sensor_id = -1;
-
+        
         // IMU quaternion
         sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, "imu_quat");
         if (sensor_id >= 0) {
             imu_quat_adr_ = mj_model_->sensor_adr[sensor_id];
         }
-
+        
         // IMU gyroscope
         sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, "imu_gyro");
         if (sensor_id >= 0) {
             imu_gyro_adr_ = mj_model_->sensor_adr[sensor_id];
         }
-
+        
         // IMU accelerometer
         sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, "imu_acc");
         if (sensor_id >= 0) {
             imu_acc_adr_ = mj_model_->sensor_adr[sensor_id];
         }
-
+        
         // Frame position
         sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, "frame_pos");
         if (sensor_id >= 0) {
             frame_pos_adr_ = mj_model_->sensor_adr[sensor_id];
         }
-
+        
         // Frame velocity
         sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, "frame_vel");
         if (sensor_id >= 0) {
@@ -197,7 +195,7 @@ public:
                 lowstate->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + num_motor_];
                 lowstate->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 2 * num_motor_];
             }
-
+            
             if(imu_quat_adr_ >= 0) {
                 lowstate->msg_.imu_state().quaternion()[0] = mj_data_->sensordata[imu_quat_adr_ + 0];
                 lowstate->msg_.imu_state().quaternion()[1] = mj_data_->sensordata[imu_quat_adr_ + 1];
@@ -213,7 +211,7 @@ public:
                 lowstate->msg_.imu_state().rpy()[1] = asin(2 * (w * y - z * x));
                 lowstate->msg_.imu_state().rpy()[2] = atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
             }
-
+            
             if(imu_gyro_adr_ >= 0) {
                 lowstate->msg_.imu_state().gyroscope()[0] = mj_data_->sensordata[imu_gyro_adr_ + 0];
                 lowstate->msg_.imu_state().gyroscope()[1] = mj_data_->sensordata[imu_gyro_adr_ + 1];
@@ -225,7 +223,7 @@ public:
                 lowstate->msg_.imu_state().accelerometer()[1] = mj_data_->sensordata[imu_acc_adr_ + 1];
                 lowstate->msg_.imu_state().accelerometer()[2] = mj_data_->sensordata[imu_acc_adr_ + 2];
             }
-
+            
             lowstate->msg_.tick() = std::round(mj_data_->time / 1e-3);
             lowstate->unlockAndPublish();
         }
@@ -253,7 +251,7 @@ public:
     std::unique_ptr<WirelessController_t> wireless_controller;
     std::shared_ptr<LowCmd_t> lowcmd;
     std::unique_ptr<LowState_t> lowstate;
-
+    
 private:
     unitree::common::RecurrentThreadPtr thread_;
 };
@@ -282,89 +280,6 @@ public:
     void run() override
     {
         RobotBridge::run();
-
-        // ---------------- "soft gripper" grasp for simulation ----------------
-        // G1 has no finger actuators in this model. To enable box pick/carry/place demos,
-        // we "attach" the box to the two hands by kinematically overwriting the box free-joint
-        // state each cycle while grasped. Toggle with joystick A when BOTH hands are close.
-        //
-        // This runs ONLY in sim (this file is simulate/).
-        static bool inited = false;
-        static int left_hand_site_id = -1;
-        static int right_hand_site_id = -1;
-        static int box_joint_qpos_adr = -1;
-        static int box_joint_dof_adr = -1;
-        static bool grasped = false;
-        static bool last_A = false;
-
-        if (!inited) {
-            left_hand_site_id = mj_name2id(mj_model_, mjOBJ_SITE, "left_hand_site");
-            right_hand_site_id = mj_name2id(mj_model_, mjOBJ_SITE, "right_hand_site");
-            int box_joint_id = mj_name2id(mj_model_, mjOBJ_JOINT, "box_joint");
-            if (box_joint_id >= 0) {
-                box_joint_qpos_adr = mj_model_->jnt_qposadr[box_joint_id];
-                box_joint_dof_adr = mj_model_->jnt_dofadr[box_joint_id];
-            }
-            inited = true;
-        }
-
-        if (left_hand_site_id >= 0 && right_hand_site_id >= 0 && box_joint_qpos_adr >= 0 && box_joint_dof_adr >= 0) {
-            bool A = false;
-            if (joystick) {
-                // "A" is the generic face button mapped by UnitreeJoystick; in sim we use it to toggle grasp.
-                A = joystick->A();
-            }
-
-            // Rising edge toggles grasp if BOTH hands are close enough.
-            if (A && !last_A) {
-                // Box free joint position is qpos[adr:adr+3]
-                const mjtNum* lh_p = mj_data_->site_xpos + 3 * left_hand_site_id;
-                const mjtNum* rh_p = mj_data_->site_xpos + 3 * right_hand_site_id;
-                const mjtNum* box_p  = mj_data_->qpos + box_joint_qpos_adr;
-                mjtNum dxl = lh_p[0] - box_p[0];
-                mjtNum dyl = lh_p[1] - box_p[1];
-                mjtNum dzl = lh_p[2] - box_p[2];
-                mjtNum dxr = rh_p[0] - box_p[0];
-                mjtNum dyr = rh_p[1] - box_p[1];
-                mjtNum dzr = rh_p[2] - box_p[2];
-                mjtNum dist_l = std::sqrt(dxl*dxl + dyl*dyl + dzl*dzl);
-                mjtNum dist_r = std::sqrt(dxr*dxr + dyr*dyr + dzr*dzr);
-
-                // Only allow "grab" when near; always allow release.
-                if (grasped) {
-                    grasped = false;
-                } else if (dist_l < 0.14 && dist_r < 0.14) {
-                    grasped = true;
-                }
-            }
-            last_A = A;
-
-            if (grasped) {
-                // Overwrite box pose to match the midpoint between the two hand sites.
-                mjtNum* box_qpos = mj_data_->qpos + box_joint_qpos_adr;
-                mjtNum* box_qvel = mj_data_->qvel + box_joint_dof_adr;
-
-                const mjtNum* lh_p = mj_data_->site_xpos + 3 * left_hand_site_id;
-                const mjtNum* rh_p = mj_data_->site_xpos + 3 * right_hand_site_id;
-                const mjtNum* hand_R = mj_data_->site_xmat + 9 * right_hand_site_id;  // use right-hand orientation
-
-                box_qpos[0] = 0.5 * (lh_p[0] + rh_p[0]);
-                box_qpos[1] = 0.5 * (lh_p[1] + rh_p[1]);
-                box_qpos[2] = 0.5 * (lh_p[2] + rh_p[2]);
-
-                // Convert 3x3 row-major rotation matrix to quaternion (w,x,y,z).
-                mjtNum quat[4];
-                mju_mat2Quat(quat, hand_R);
-                box_qpos[3] = quat[0];
-                box_qpos[4] = quat[1];
-                box_qpos[5] = quat[2];
-                box_qpos[6] = quat[3];
-
-                // Zero velocities to avoid energy injection.
-                for (int i = 0; i < 6; ++i) box_qvel[i] = 0.0;
-            }
-        }
-        // ---------------- end soft gripper grasp ----------------
 
         // secondary IMU state
         if (secondary_imustate->trylock()) {

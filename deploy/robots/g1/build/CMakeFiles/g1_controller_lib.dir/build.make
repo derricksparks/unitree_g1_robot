@@ -97,35 +97,19 @@ CMakeFiles/g1_controller_lib.dir/src/State_RLBase.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/g1_controller_lib.dir/src/State_RLBase.cpp.s"
 	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/drake/unitree_rl_mjlab/deploy/robots/g1/src/State_RLBase.cpp -o CMakeFiles/g1_controller_lib.dir/src/State_RLBase.cpp.s
 
-CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o: CMakeFiles/g1_controller_lib.dir/flags.make
-CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o: /home/drake/unitree_rl_mjlab/deploy/robots/g1/src/State_RLHybrid.cpp
-CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o: CMakeFiles/g1_controller_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/drake/unitree_rl_mjlab/deploy/robots/g1/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o -MF CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o.d -o CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o -c /home/drake/unitree_rl_mjlab/deploy/robots/g1/src/State_RLHybrid.cpp
-
-CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.i"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/drake/unitree_rl_mjlab/deploy/robots/g1/src/State_RLHybrid.cpp > CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.i
-
-CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.s"
-	/usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/drake/unitree_rl_mjlab/deploy/robots/g1/src/State_RLHybrid.cpp -o CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.s
-
 # Object files for target g1_controller_lib
 g1_controller_lib_OBJECTS = \
 "CMakeFiles/g1_controller_lib.dir/src/State_Mimic.cpp.o" \
-"CMakeFiles/g1_controller_lib.dir/src/State_RLBase.cpp.o" \
-"CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o"
+"CMakeFiles/g1_controller_lib.dir/src/State_RLBase.cpp.o"
 
 # External object files for target g1_controller_lib
 g1_controller_lib_EXTERNAL_OBJECTS =
 
 libg1_controller_lib.a: CMakeFiles/g1_controller_lib.dir/src/State_Mimic.cpp.o
 libg1_controller_lib.a: CMakeFiles/g1_controller_lib.dir/src/State_RLBase.cpp.o
-libg1_controller_lib.a: CMakeFiles/g1_controller_lib.dir/src/State_RLHybrid.cpp.o
 libg1_controller_lib.a: CMakeFiles/g1_controller_lib.dir/build.make
 libg1_controller_lib.a: CMakeFiles/g1_controller_lib.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/drake/unitree_rl_mjlab/deploy/robots/g1/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Linking CXX static library libg1_controller_lib.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/drake/unitree_rl_mjlab/deploy/robots/g1/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Linking CXX static library libg1_controller_lib.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/g1_controller_lib.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/g1_controller_lib.dir/link.txt --verbose=$(VERBOSE)
 
