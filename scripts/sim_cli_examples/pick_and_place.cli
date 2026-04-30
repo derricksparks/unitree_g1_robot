@@ -1,0 +1,42 @@
+# scripts/sim_cli_examples/pick_and_place.cli
+#
+# Walk-pick-walk-place scripted via the CLI. Run with:
+#
+#   python scripts/sim_cli.py --script scripts/sim_cli_examples/pick_and_place.cli
+#
+# Lines starting with '#' are comments. Coordinate args support arithmetic
+# and named anchors: box.{x,y,z}, target.{x,y,z}, pelvis.{x,y,z},
+# lhand.{x,y,z}, rhand.{x,y,z}, plus pi, tau, deg(...), rad(...).
+
+status
+
+# 1. Walk to the table.
+goto table
+
+# 2. Reach each hand to opposite sides of the box and grasp with BOTH hands.
+reach left  box.x box.y+0.07 box.z+0.10
+reach right box.x box.y-0.07 box.z+0.10
+reach left  box.x box.y+0.07 box.z+0.04
+reach right box.x box.y-0.07 box.z+0.04
+grasp both
+
+# 3. Lift the box clear of the table (both hands).
+reach left  box.x box.y+0.07 box.z+0.20
+reach right box.x box.y-0.07 box.z+0.20
+
+# 4. Walk to the shelf (carrying the box between both hands).
+goto shelf
+
+# 5. Reach both hands to opposite sides of the place target, lower, release.
+reach left  target.x target.y+0.07 target.z+0.16
+reach right target.x target.y-0.07 target.z+0.16
+reach left  target.x target.y+0.07 target.z+0.06
+reach right target.x target.y-0.07 target.z+0.06
+release
+settle 1.5
+
+# 6. Walk back to the start.
+goto home
+status
+
+quit

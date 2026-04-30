@@ -147,6 +147,12 @@
             <geom pos="0.0039635 0 -0.044" type="mesh" contype="0" conaffinity="0" group="1" density="0" rgba="0.2 0.2 0.2 1" mesh="head_link"/>
             <geom pos="0.0039635 0 -0.044" type="mesh" rgba="0.2 0.2 0.2 1" mesh="head_link"/>
             <site name="imu_in_torso" size="0.01" pos="-0.03959 -0.00224 0.14792"/>
+    <!-- ========== INSERT CAMERA BLOCK HERE ========== -->
+    <!-- ========== INTEL REALSENSE D435i ========== -->
+            <site name="d435i_mount" size="0.01" pos="0.08 0 0.32" quat="1 0 0 0" rgba="0.2 0.2 0.8 1"/>
+            <camera name="d435i_rgb" mode="fixed" fovy="55.2" resolution="640 480" pos="0.1 0 0.35" xyaxes="0 -1 0 0.34 0 0.94"/>
+            <camera name="d435i_depth" mode="fixed" fovy="55.2" resolution="640 480" pos="0.08 0 0.32" xyaxes="0 -1 0 0.707 0 0.707"/>
+    <!-- ========== END CAMERA BLOCK ========== -->
             <body name="left_shoulder_pitch_link" pos="0.0039563 0.10022 0.24778" quat="0.990264 0.139201 1.38722e-05 -9.86868e-05">
               <inertial pos="0 0.035892 -0.011628" quat="0.654152 0.0130458 -0.326267 0.68225" mass="0.718" diaginertia="0.000465864 0.000432842 0.000406394"/>
               <joint name="left_shoulder_pitch_joint" pos="0 0 0" axis="0 1 0" range="-3.0892 2.6704" actuatorfrcrange="-25 25"/>
@@ -237,7 +243,51 @@
         </body>
       </body>
     </body>
+
+        <!-- ========== WAREHOUSE SCENE ========== -->
+    <!-- Reception Table (static, in front of the robot at x=+2.0). -->
+    <body name="reception_table" pos="2.0 0.0 0.0">
+        <geom name="table_top" type="box" size="0.30 0.30 0.02" pos="0 0 0.74" rgba="0.5 0.35 0.05 1"/>
+        <geom name="table_leg1" type="cylinder" size="0.03 0.36" pos="-0.25 -0.25 0.36" rgba="0.4 0.25 0.1 1"/>
+        <geom name="table_leg2" type="cylinder" size="0.03 0.36" pos=" 0.25 -0.25 0.36" rgba="0.4 0.25 0.1 1"/>
+        <geom name="table_leg3" type="cylinder" size="0.03 0.36" pos="-0.25  0.25 0.36" rgba="0.4 0.25 0.1 1"/>
+        <geom name="table_leg4" type="cylinder" size="0.03 0.36" pos=" 0.25  0.25 0.36" rgba="0.4 0.25 0.1 1"/>
+    </body>
+
+    <!-- Pickable Red Box on the near edge of the table on the robot's LEFT
+         side so the left arm can reach it. World pos = table_pos + offset. -->
+    <body name="warehouse_box" pos="1.90 0.15 0.81">
+        <freejoint name="box_joint"/>
+        <inertial pos="0 0 0" mass="1.0" diaginertia="0.0042 0.0042 0.0042"/>
+        <geom name="box_geom" type="box" size="0.05 0.05 0.05" rgba="1 0.1 0.1 1" friction="1.5 0.05 0.001"/>
+        <site name="box_site" pos="0 0 0" size="0.005" rgba="1 1 0 1"/>
+    </body>
+
+    <!-- Storage Shelf (static, behind the robot at x=-3.0). The robot will
+         walk ~1.5 m forward to the table, pick the box, then turn 180° and
+         walk ~2.5 m back to here to place. -->
+    <body name="storage_shelf" pos="-3.0 0.0 0.0">
+        <geom name="shelf_bottom" type="box" size="0.25 0.25 0.02" pos="0 0 0.40" rgba="0.6 0.6 0.6 1"/>
+        <geom name="shelf_middle" type="box" size="0.25 0.25 0.02" pos="0 0 0.80" rgba="0.6 0.6 0.6 1"/>
+        <geom name="shelf_top"    type="box" size="0.25 0.25 0.02" pos="0 0 1.20" rgba="0.6 0.6 0.6 1"/>
+        <geom name="shelf_leg1" type="cylinder" size="0.03 0.6" pos="-0.22 -0.22 0.6" rgba="0.5 0.5 0.5 1"/>
+        <geom name="shelf_leg2" type="cylinder" size="0.03 0.6" pos=" 0.22 -0.22 0.6" rgba="0.5 0.5 0.5 1"/>
+        <geom name="shelf_leg3" type="cylinder" size="0.03 0.6" pos="-0.22  0.22 0.6" rgba="0.5 0.5 0.5 1"/>
+        <geom name="shelf_leg4" type="cylinder" size="0.03 0.6" pos=" 0.22  0.22 0.6" rgba="0.5 0.5 0.5 1"/>
+        <!-- Place target on the middle shelf, on the LEFT side relative to the
+             post-turn pelvis (world -y), so the left hand naturally reaches. -->
+        <site name="place_target" pos="0.10 -0.15 0.83" size="0.05 0.05 0.001" type="box" rgba="0 1 0 0.3"/>
+    </body>
+    <!-- ========== END WAREHOUSE SCENE ========== -->
   </worldbody>
+
+  <!-- Equality constraints used to "grasp" the box from Python at runtime.
+       Both are inactive by default; the demo enables one of them when the
+       corresponding hand reaches the box. -->
+  <equality>
+    <weld name="left_hand_grasp"  body1="left_wrist_yaw_link"  body2="warehouse_box" active="false" solref="0.005 1"/>
+    <weld name="right_hand_grasp" body1="right_wrist_yaw_link" body2="warehouse_box" active="false" solref="0.005 1"/>
+  </equality>
 
   <actuator>
     <motor name="left_hip_pitch" joint="left_hip_pitch_joint" ctrlrange="-88 88" />
@@ -374,7 +424,7 @@
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.1 0.1 0.1" specular="0.9 0.9 0.9"/>
     <rgba haze="0.15 0.25 0.35 1"/>
-    <global azimuth="-140" elevation="-20"/>
+    <global azimuth="-140" elevation="-20" offwidth="1280" offheight="720"/>
   </visual>
   <asset>
     <texture type="skybox" builtin="flat" rgb1="0 0 0" rgb2="0 0 0" width="512" height="3072"/>

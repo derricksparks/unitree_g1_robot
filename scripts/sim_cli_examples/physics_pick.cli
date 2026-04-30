@@ -1,0 +1,46 @@
+# scripts/sim_cli_examples/physics_pick.cli
+#
+# End-to-end physics demo:
+#   * trained Unitree-G1-Flat ONNX policy walks the legs (real footsteps)
+#   * onboard d435i_rgb camera segments the red box
+#   * Cartesian DLS-IK + null-space pull picks it up with the left hand
+#   * the robot then walks across the room carrying the box (the carry pose
+#     keeps the hand close to the chest and a "magnetic gripper" model takes
+#     the weight, since the shipped Flat policy was trained without payload)
+#   * the box is dropped on the place_target on the shelf.
+#
+# Run with:
+#   python scripts/sim_cli_physics.py --script scripts/sim_cli_examples/physics_pick.cli
+
+status
+
+# 1. Walk into viewing range of the table (the box is at world ~ (1.9, 0.15, 0.81)).
+goto 1.0 0.0 0.0
+
+# 2. Detect the red box from the onboard camera.
+detect
+
+# 3. Walk to a stand-off pose so the LEFT hand can reach the box without
+#    over-extension. `approach` uses the last detection.
+approach left 0.45
+
+# 4. Refresh the detection now that we're at the optimal viewing pose, then
+#    grasp it with the left hand. Pickup = stand-still + smooth Cartesian
+#    reach + grasp + tuck-in to the body-frame carry pose.
+detect
+pickup left
+
+status
+
+# 5. Walk to a stand-off in front of the shelf. `goto` will choose forward
+#    or backward walking based on the heading error to avoid forcing a
+#    full U-turn under payload.
+goto target.x+0.45 target.y+0.10 pi
+
+status
+
+# 6. Place the box on the place_target.
+place left
+
+status
+quit
