@@ -9,6 +9,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
 
 from .commands import BoxTransportCommand
+from .observations import _palm_positions_w
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -28,12 +29,6 @@ def _command(env: ManagerBasedRlEnv, command_name: str) -> BoxTransportCommand:
   return command
 
 
-def _body_pos_w(env: ManagerBasedRlEnv, body_name: str) -> torch.Tensor:
-  robot = _robot(env)
-  body_ids = robot.find_bodies((body_name,), preserve_order=True)[0]
-  return robot.data.body_link_pos_w[:, body_ids[0], :]
-
-
 def _stage_mask(env: ManagerBasedRlEnv, command_name: str, min_stage: int) -> torch.Tensor:
   return (_command(env, command_name).stage >= min_stage).float()
 
@@ -41,22 +36,44 @@ def _stage_mask(env: ManagerBasedRlEnv, command_name: str, min_stage: int) -> to
 def reach_box(
   env: ManagerBasedRlEnv,
   command_name: str,
-  std: float = 0.25,
-  left_body_name: str = "left_wrist_yaw_link",
-  right_body_name: str = "right_wrist_yaw_link",
+  std_pair: float = 0.38,
+  std_max_hand: float = 0.20,
+  left_site: str = "left_palm",
+  right_site: str = "right_palm",
 ) -> torch.Tensor:
+  """Bimanual reach: tighten when the *farther* palm is still away (fingerless pinch)."""
   del command_name
   box_pos = _box(env).data.root_link_pos_w[:, :3]
-  left_dist = torch.norm(_body_pos_w(env, left_body_name) - box_pos, dim=-1)
-  right_dist = torch.norm(_body_pos_w(env, right_body_name) - box_pos, dim=-1)
-  return torch.exp(-0.5 * (left_dist + right_dist) / std)
+  palms = _palm_positions_w(env, left_site, right_site)
+  left_dist = torch.norm(box_pos - palms[:, 0, :], dim=-1)
+  right_dist = torch.norm(box_pos - palms[:, 1, :], dim=-1)
+  pair_mean = 0.5 * (left_dist + right_dist)
+  worst_hand = torch.maximum(left_dist, right_dist)
+  r_pair = torch.exp(-pair_mean / std_pair)
+  r_both = torch.exp(-worst_hand / std_max_hand)
+  return 0.42 * r_pair + 0.58 * r_both
+
+
+def lift_progress(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  lift_cap: float = 0.12,
+) -> torch.Tensor:
+  """Dense height-from-table reward (stage≥1): gives gradient before the peak lift term kicks in."""
+  cmd = _command(env, command_name)
+  dz = torch.clamp(
+    _box(env).data.root_link_pos_w[:, 2] - cmd.box_start_pos_w[:, 2],
+    min=0.0,
+    max=lift_cap,
+  )
+  return dz / lift_cap * _stage_mask(env, command_name, 1)
 
 
 def lift_box(
   env: ManagerBasedRlEnv,
   command_name: str,
-  lift_height: float = 0.12,
-  std: float = 0.12,
+  lift_height: float = 0.09,
+  std: float = 0.155,
 ) -> torch.Tensor:
   cmd = _command(env, command_name)
   target_z = cmd.box_start_pos_w[:, 2] + lift_height
@@ -67,7 +84,7 @@ def lift_box(
 def carry_box_to_shelf(
   env: ManagerBasedRlEnv,
   command_name: str,
-  std: float = 0.45,
+  std: float = 0.54,
 ) -> torch.Tensor:
   cmd = _command(env, command_name)
   box_pos = _box(env).data.root_link_pos_w[:, :3]
@@ -78,8 +95,8 @@ def carry_box_to_shelf(
 def place_box_on_shelf(
   env: ManagerBasedRlEnv,
   command_name: str,
-  xy_std: float = 0.18,
-  z_std: float = 0.08,
+  xy_std: float = 0.22,
+  z_std: float = 0.105,
 ) -> torch.Tensor:
   cmd = _command(env, command_name)
   box_pos = _box(env).data.root_link_pos_w[:, :3]
@@ -94,21 +111,41 @@ def place_box_on_shelf(
 def box_upright(env: ManagerBasedRlEnv) -> torch.Tensor:
   # Reward low angular velocity; for a small cuboid this is a practical carry-stability proxy.
   ang_vel = _box(env).data.root_link_ang_vel_w[:, :3]
-  return torch.exp(-torch.sum(torch.square(ang_vel), dim=-1) / 4.0)
+  return torch.exp(-torch.sum(torch.square(ang_vel), dim=-1) / 3.2)
 
 
 def keep_box_in_hands(
   env: ManagerBasedRlEnv,
   command_name: str,
-  max_dist: float = 0.28,
-  left_body_name: str = "left_wrist_yaw_link",
-  right_body_name: str = "right_wrist_yaw_link",
+  max_dist: float = 0.27,
+  left_site: str = "left_palm",
+  right_site: str = "right_palm",
 ) -> torch.Tensor:
   box_pos = _box(env).data.root_link_pos_w[:, :3]
-  left_dist = torch.norm(_body_pos_w(env, left_body_name) - box_pos, dim=-1)
-  right_dist = torch.norm(_body_pos_w(env, right_body_name) - box_pos, dim=-1)
+  palms = _palm_positions_w(env, left_site, right_site)
+  left_dist = torch.norm(box_pos - palms[:, 0, :], dim=-1)
+  right_dist = torch.norm(box_pos - palms[:, 1, :], dim=-1)
   held = ((left_dist < max_dist) & (right_dist < max_dist)).float()
   return held * _stage_mask(env, command_name, 1)
+
+
+def box_stable_on_shelf(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str = "box_shelf_contact",
+  lin_vel_std: float = 0.30,
+  ang_vel_std: float = 1.15,
+) -> torch.Tensor:
+  """Bonus when the box contacts the shelf and is nearly at rest (successful place)."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  assert sensor.data.found is not None
+  found = sensor.data.found
+  on_shelf = (found.reshape(found.shape[0], -1).to(torch.float32) > 0.5).any(dim=1).float()
+  box_e = _box(env)
+  lin = torch.norm(box_e.data.root_link_lin_vel_w[:, :3], dim=-1)
+  ang = torch.norm(box_e.data.root_link_ang_vel_w[:, :3], dim=-1)
+  still = torch.exp(-lin / lin_vel_std) * torch.exp(-ang / ang_vel_std)
+  return on_shelf * still * _stage_mask(env, command_name, 3)
 
 
 def foot_contact_balance(

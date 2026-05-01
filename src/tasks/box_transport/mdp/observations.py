@@ -32,10 +32,17 @@ def _to_base_frame(env: ManagerBasedRlEnv, vec_w: torch.Tensor) -> torch.Tensor:
   return quat_apply_inverse(robot.data.root_link_quat_w, vec_w)
 
 
-def _body_pos_w(env: ManagerBasedRlEnv, body_name: str) -> torch.Tensor:
+def _palm_positions_w(env: ManagerBasedRlEnv, left_site: str, right_site: str) -> torch.Tensor:
+  """Palm-frame positions (G1 rigid hand pads; no articulated fingers).
+
+  Sites ``left_palm`` / ``right_palm`` sit on the distal collision geometry (~x
+  axis on wrist_yaw_link), closer to pinch contacts than the link origin.
+  """
   robot = _robot(env)
-  body_ids = robot.find_bodies((body_name,), preserve_order=True)[0]
-  return robot.data.body_link_pos_w[:, body_ids[0], :]
+  site_ids, _ = robot.find_sites((left_site, right_site), preserve_order=True)
+  palms = robot.data.site_pos_w[:, site_ids, :]
+  assert palms.shape[1] == 2
+  return palms
 
 
 def box_position_b(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -58,12 +65,13 @@ def box_to_shelf_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
 
 def hand_to_box_b(
   env: ManagerBasedRlEnv,
-  left_body_name: str = "left_wrist_yaw_link",
-  right_body_name: str = "right_wrist_yaw_link",
+  left_site: str = "left_palm",
+  right_site: str = "right_palm",
 ) -> torch.Tensor:
   box_pos = _box(env).data.root_link_pos_w[:, :3]
-  left_rel = box_pos - _body_pos_w(env, left_body_name)
-  right_rel = box_pos - _body_pos_w(env, right_body_name)
+  palms = _palm_positions_w(env, left_site, right_site)
+  left_rel = box_pos - palms[:, 0, :]
+  right_rel = box_pos - palms[:, 1, :]
   return torch.cat([_to_base_frame(env, left_rel), _to_base_frame(env, right_rel)], dim=-1)
 
 

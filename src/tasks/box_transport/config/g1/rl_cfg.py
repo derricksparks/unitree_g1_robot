@@ -8,6 +8,11 @@ from mjlab.rl import (
 
 
 def unitree_g1_box_transport_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """PPO tuned for staged whole-body manipulation (long horizons, sparse late success).
+
+  Matches extended curriculum thresholds in ``box_transport_env_cfg`` (~23.5k policy steps before
+  final stage ramps). Increase ``max_iterations`` further if parallel env count is modest.
+  """
   return RslRlOnPolicyRunnerCfg(
     actor=RslRlModelCfg(
       hidden_dims=(512, 256, 128),
@@ -15,7 +20,7 @@ def unitree_g1_box_transport_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       obs_normalization=True,
       distribution_cfg={
         "class_name": "GaussianDistribution",
-        "init_std": 0.8,
+        "init_std": 0.92,
         "std_type": "scalar",
       },
     ),
@@ -28,10 +33,10 @@ def unitree_g1_box_transport_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       value_loss_coef=1.0,
       use_clipped_value_loss=True,
       clip_param=0.2,
-      entropy_coef=0.005,
+      entropy_coef=0.012,
       num_learning_epochs=5,
       num_mini_batches=4,
-      learning_rate=5.0e-4,
+      learning_rate=6.0e-4,
       schedule="adaptive",
       gamma=0.99,
       lam=0.95,
@@ -41,5 +46,5 @@ def unitree_g1_box_transport_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     experiment_name="g1_box_transport",
     save_interval=100,
     num_steps_per_env=24,
-    max_iterations=12000,
+    max_iterations=22000,
   )

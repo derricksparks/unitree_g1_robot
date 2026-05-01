@@ -2,8 +2,9 @@
   <worldbody>
     <body name="box" pos="0.65 0 0.78">
       <freejoint name="box_freejoint"/>
-      <inertial pos="0 0 0" mass="0.6" diaginertia="0.0020 0.0025 0.0030"/>
-      <geom name="box_geom" type="box" size="0.10 0.075 0.06" rgba="0.9 0.08 0.04 1" condim="4" friction="1.0 0.01 0.001"/>
+      <inertial pos="0 0 0" mass="0.48" diaginertia="0.0020 0.0025 0.0030"/>
+      <geom name="box_geom" type="box" size="0.10 0.075 0.06" rgba="0.9 0.08 0.04 1" condim="4"
+            friction="1.15 0.03 0.002"/>
       <site name="box_center" pos="0 0 0" size="0.015" rgba="1 1 0 1"/>
     </body>
   </worldbody>
