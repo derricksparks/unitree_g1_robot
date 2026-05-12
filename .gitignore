@@ -1,0 +1,13 @@
+# Python / local env (never commit)
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+MUJOCO_LOG.TXT
+
+simulation/mujoco/g1/assets/*.stl
+simulation/mujoco/g1/assets/*.dae
+simulation/mujoco/g1/assets/*.obj
+simulation/mujoco/g1/assets/*.glb
+simulation/mujoco/g1/assets/*.bin

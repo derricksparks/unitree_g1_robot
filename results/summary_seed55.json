@@ -1,0 +1,13 @@
+{
+  "trials": 50,
+  "capture_success_rate": 1.0,
+  "transfer_success_rate": 1.0,
+  "average_speed": 0.5,
+  "max_decision_time": 0.0006358730024658144,
+  "payload_min": 0.5138650287007471,
+  "payload_max": 1.9949254228813456,
+  "speed_ok": true,
+  "capture_ok": true,
+  "transfer_ok": true,
+  "decision_time_ok": true
+}

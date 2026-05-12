@@ -1,0 +1,17 @@
+robot:
+  name: unitree_g1
+  min_dof: 10
+  payload_kg: 2.0
+
+task:
+  target_speed_mps: 0.5
+  max_frame_processing_time_s: 1.0
+  max_control_decision_time_s: 0.5
+  min_capture_success_rate: 0.75
+  min_transfer_success_rate: 0.80
+
+environment:
+  table_position: [1.2, 0.0, 0.75]
+  shelf_position: [3.0, 0.0, 1.0]
+  box_position: [1.2, -0.12, 0.84]
+  box_mass_kg: 2.0

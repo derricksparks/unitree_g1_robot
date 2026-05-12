@@ -1,0 +1,97 @@
+# Joint / actuator map for simulation/mujoco/g1/assets/g1.xml (29-DOF revolute + 6-DOF free base).
+# Actuator names match add_position_actuators.py: <joint_name>_pos_actuator
+
+base:
+  root_joint: floating_base_joint
+
+legs:
+  left:
+    - left_hip_pitch_joint
+    - left_hip_roll_joint
+    - left_hip_yaw_joint
+    - left_knee_joint
+    - left_ankle_pitch_joint
+    - left_ankle_roll_joint
+  right:
+    - right_hip_pitch_joint
+    - right_hip_roll_joint
+    - right_hip_yaw_joint
+    - right_knee_joint
+    - right_ankle_pitch_joint
+    - right_ankle_roll_joint
+
+torso:
+  - waist_yaw_joint
+  - waist_roll_joint
+  - waist_pitch_joint
+
+arms:
+  left:
+    - left_shoulder_pitch_joint
+    - left_shoulder_roll_joint
+    - left_shoulder_yaw_joint
+    - left_elbow_joint
+  right:
+    - right_shoulder_pitch_joint
+    - right_shoulder_roll_joint
+    - right_shoulder_yaw_joint
+    - right_elbow_joint
+
+hands:
+  left:
+    joints:
+      - left_wrist_roll_joint
+      - left_wrist_pitch_joint
+      - left_wrist_yaw_joint
+    actuators:
+      - left_wrist_roll_joint_pos_actuator
+      - left_wrist_pitch_joint_pos_actuator
+      - left_wrist_yaw_joint_pos_actuator
+  right:
+    joints:
+      - right_wrist_roll_joint
+      - right_wrist_pitch_joint
+      - right_wrist_yaw_joint
+    actuators:
+      - right_wrist_roll_joint_pos_actuator
+      - right_wrist_pitch_joint_pos_actuator
+      - right_wrist_yaw_joint_pos_actuator
+
+ignored_joints: []
+
+# Full set of <position> actuator names in g1_position_actuated.xml (29), same order as mjActuator id.
+position_actuators_all:
+  - left_hip_pitch_joint_pos_actuator
+  - left_hip_roll_joint_pos_actuator
+  - left_hip_yaw_joint_pos_actuator
+  - left_knee_joint_pos_actuator
+  - left_ankle_pitch_joint_pos_actuator
+  - left_ankle_roll_joint_pos_actuator
+  - right_hip_pitch_joint_pos_actuator
+  - right_hip_roll_joint_pos_actuator
+  - right_hip_yaw_joint_pos_actuator
+  - right_knee_joint_pos_actuator
+  - right_ankle_pitch_joint_pos_actuator
+  - right_ankle_roll_joint_pos_actuator
+  - waist_yaw_joint_pos_actuator
+  - waist_roll_joint_pos_actuator
+  - waist_pitch_joint_pos_actuator
+  - left_shoulder_pitch_joint_pos_actuator
+  - left_shoulder_roll_joint_pos_actuator
+  - left_shoulder_yaw_joint_pos_actuator
+  - left_elbow_joint_pos_actuator
+  - left_wrist_roll_joint_pos_actuator
+  - left_wrist_pitch_joint_pos_actuator
+  - left_wrist_yaw_joint_pos_actuator
+  - right_shoulder_pitch_joint_pos_actuator
+  - right_shoulder_roll_joint_pos_actuator
+  - right_shoulder_yaw_joint_pos_actuator
+  - right_elbow_joint_pos_actuator
+  - right_wrist_roll_joint_pos_actuator
+  - right_wrist_pitch_joint_pos_actuator
+  - right_wrist_yaw_joint_pos_actuator
+
+notes: |
+  Source: g1.xml inventory (30 joints: 1 free base + 29 hinges). floating_base_joint is not position-actuated.
+  Leg + torso + arm joint rows use *_joint names; after running add_position_actuators.py, commanded torques use
+  *_pos_actuator on the 29 hinges (nu=29). Rubber hands are fixed geoms on wrist yaw link—no extra finger DOFs in this MJCF.

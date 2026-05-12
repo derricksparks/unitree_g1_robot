@@ -1,0 +1,151 @@
+<mujoco model="g1_pick_place_world">
+
+    <option gravity="0 0 -9.81" timestep="0.002"/>
+
+    <worldbody>
+
+        <!-- Ground -->
+        <geom name="ground"
+              type="plane"
+              size="5 5 0.1"
+              contype="4"
+              conaffinity="1"
+              rgba="0.8 0.9 0.8 1"/>
+
+        <body name="table" pos="1.2 0.0 0.0">
+
+            <!-- table top -->
+            <geom name="table_top"
+                type="box"
+                pos="0 0 0.75"
+                size="0.45 0.35 0.04"
+                contype="4"
+                conaffinity="1"
+                rgba="0.6 0.4 0.2 1"/>
+
+            <!-- legs -->
+            <geom type="box" pos="0.35 0.25 0.37" size="0.03 0.03 0.37" rgba="0.35 0.2 0.1 1"/>
+            <geom type="box" pos="-0.35 0.25 0.37" size="0.03 0.03 0.37" rgba="0.35 0.2 0.1 1"/>
+            <geom type="box" pos="0.35 -0.25 0.37" size="0.03 0.03 0.37" rgba="0.35 0.2 0.1 1"/>
+            <geom type="box" pos="-0.35 -0.25 0.37" size="0.03 0.03 0.37" rgba="0.35 0.2 0.1 1"/>
+
+        </body>
+
+        <!-- Box (object to pick) -->
+        <body name="box" pos="1.2 -0.12 0.84">
+            <freejoint name="box_freejoint"/>
+            <geom name="box_geom"
+                  type="box"
+                  size="0.05 0.05 0.05"
+                  mass="2.0"
+                  contype="1"
+                  conaffinity="6"
+                  friction="2.2 0.22 0.22"
+                  rgba="1 0 0 1"/>
+        </body>
+
+        <!-- Shelf -->
+        <body name="shelf" pos="3.0 0.0 1.0">
+            <geom name="shelf_top_geom"
+                  type="box"
+                  size="0.4 0.4 0.1"
+                  contype="4"
+                  conaffinity="1"
+                  friction="1.2 0.15 0.15"
+                  rgba="0.3 0.3 0.8 1"/>
+        </body>
+
+        <!-- Placeholder robot base -->
+        <body name="robot_base" pos="0 0 1.0">
+            <joint name="robot_slide_x" type="slide" axis="1 0 0" damping="10"/>
+            <joint name="robot_slide_y" type="slide" axis="0 1 0" damping="10"/>
+
+            <!-- torso -->
+            <geom type="capsule" size="0.1 0.5" rgba="0.2 0.2 0.2 1"/>
+
+            <!-- right shoulder -->
+            <body name="right_upper_arm" pos="0.15 -0.12 0.38">
+                <joint name="right_shoulder_pitch" type="hinge" axis="0 1 0" range="-2.0 2.0" damping="2.0"/>
+                <geom type="capsule" fromto="0 0 0 0.3 0 -0.15" size="0.035" rgba="0.1 0.1 0.8 1"/>
+
+                <!-- right elbow -->
+                <body name="right_forearm" pos="0.3 0 -0.15">
+                    <joint name="right_elbow_pitch" type="hinge" axis="0 1 0" range="-2.0 2.0" damping="2.0"/>
+                    <geom type="capsule" fromto="0 0 0 0.3 0 -0.05" size="0.03" rgba="0.1 0.8 0.1 1"/>
+
+                    <!-- hand -->
+                    <body name="right_hand" pos="0.3 0 -0.01">
+                        <geom name="right_palm_geom"
+                              type="box"
+                              size="0.04 0.055 0.035"
+                              mass="0.05"
+                              contype="0"
+                              conaffinity="0"
+                              rgba="1 0.8 0.2 1"/>
+
+                        <geom name="right_gripper_support_geom"
+                              type="box"
+                              pos="0.11 0 -0.125"
+                              size="0.055 0.055 0.008"
+                              mass="0.02"
+                              contype="0"
+                              conaffinity="0"
+                              friction="2.2 0.22 0.22"
+                              rgba="0.95 0.7 0.15 1"/>
+
+                        <body name="right_gripper_left_finger" pos="0.07 0.075 0.0">
+                            <joint name="right_left_finger_slide"
+                                   type="slide"
+                                   axis="0 -1 0"
+                                   range="0 0.045"
+                                   damping="2.0"/>
+                            <geom name="right_left_finger_geom"
+                                  type="box"
+                                  pos="0.03 0 0"
+                                  size="0.07 0.012 0.045"
+                                  mass="0.02"
+                                  contype="2"
+                                  conaffinity="1"
+                                  friction="2.2 0.22 0.22"
+                                  rgba="0.95 0.7 0.15 1"/>
+                        </body>
+
+                        <body name="right_gripper_right_finger" pos="0.07 -0.075 0.0">
+                            <joint name="right_right_finger_slide"
+                                   type="slide"
+                                   axis="0 1 0"
+                                   range="0 0.045"
+                                   damping="2.0"/>
+                            <geom name="right_right_finger_geom"
+                                  type="box"
+                                  pos="0.03 0 0"
+                                  size="0.07 0.012 0.045"
+                                  mass="0.02"
+                                  contype="2"
+                                  conaffinity="1"
+                                  friction="2.2 0.22 0.22"
+                                  rgba="0.95 0.7 0.15 1"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+
+    </worldbody>
+
+    <actuator>
+        <position name="right_shoulder_motor" joint="right_shoulder_pitch" kp="1200"/>
+        <position name="right_elbow_motor" joint="right_elbow_pitch" kp="1200"/>
+        <position name="right_left_finger_motor"
+                  joint="right_left_finger_slide"
+                  kp="80"
+                  ctrllimited="true"
+                  ctrlrange="0 0.045"/>
+        <position name="right_right_finger_motor"
+                  joint="right_right_finger_slide"
+                  kp="80"
+                  ctrllimited="true"
+                  ctrlrange="0 0.045"/>
+    </actuator>
+
+</mujoco>

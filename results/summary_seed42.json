@@ -1,0 +1,18 @@
+{
+  "trials": 20,
+  "capture_success_rate": 1.0,
+  "transfer_success_rate": 1.0,
+  "average_speed": 0.5,
+  "max_decision_time": 0.0033341170001222054,
+  "average_frame_processing_time": 2.6607240322520526e-06,
+  "max_frame_processing_time": 6.200099960551597e-05,
+  "average_hand_target_error": 0.009889589008992564,
+  "max_hand_target_error": 0.3079042772316822,
+  "payload_min": 0.5340681097007907,
+  "payload_max": 1.9428464968242718,
+  "speed_ok": true,
+  "capture_ok": true,
+  "transfer_ok": true,
+  "decision_time_ok": true,
+  "frame_time_ok": true
+}
