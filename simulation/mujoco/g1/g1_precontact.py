@@ -30,6 +30,11 @@ MAX_PENETRATION_DEPTH_OK_M = 0.005
 # Dual-arm milestone: reject success if any monitored palm/proxy geom overlaps this deeply into the box AABB.
 MAX_DUAL_BOX_PENETRATION_ANY_GEOM_M = 0.005
 
+# Dual-arm episodes command palm **sites** toward nominal plate centers, but penetration is scored on the
+# palm **contact** geom OBB; wrist orientation spreads corners past the single-arm clearance budget.
+# Extra −x margin on dual IK targets only (see :meth:`perception.g1_box_perception.G1BoxPerception.detect_box`).
+DUAL_PALM_EXTRA_NEAR_FACE_CLEARANCE_X_M = 0.019
+
 TOUCH_DISTANCE_M = 0.025
 
 # When the palm is high above / beside the box, its OBB can still cross the infinite

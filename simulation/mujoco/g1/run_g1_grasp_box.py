@@ -88,8 +88,11 @@ from run_g1_right_arm_ik_demo import (  # noqa: E402
     _smoothstep01,
 )
 
-# Centered box (dual-arm IK milestone layout).
-REACH_BOX_DUAL_MILESTONE_SCENE_PATH = _G1 / "g1_reach_box_scene.xml"
+# Centered box (dual-arm IK milestone layout) — **Dex3-1 hands** pipeline scene.
+REACH_BOX_DUAL_MILESTONE_SCENE_PATH = _G1 / "g1_reach_box_scene_dex3.xml"
+# Authoritative Dex3 MJCF (forked from ``assets/unitree_g1/``; do not edit upstream).
+PIPELINE_G1_DEX3_HANDS_XML = _G1 / "assets" / "g1_dex3_hands_actuated.xml"
+G1_DUAL_ARM_NU_DEX3 = 43
 # Lateral offset clears neutral-pose self overlap for grasp/touch/reach demos.
 REACH_BOX_SCENE_SINGLE_ARM_OFFSET_PATH = _G1 / "g1_reach_box_scene_single_arm_offset.xml"
 SCENE_PATH = REACH_BOX_SCENE_SINGLE_ARM_OFFSET_PATH
@@ -201,15 +204,20 @@ def _command_grasp_actuators(
     actuator_ids: dict[str, int],
     *,
     proxy_slide_target: float,
+    use_legacy_proxy_finger_motors: bool = True,
 ) -> None:
     for aname, aid in actuator_ids.items():
         an = str(aname)
-        if an in (PROXY_LEFT_MOTOR, PROXY_RIGHT_MOTOR):
+        if use_legacy_proxy_finger_motors and an in (PROXY_LEFT_MOTOR, PROXY_RIGHT_MOTOR):
             data.ctrl[aid] = float(proxy_slide_target)
             continue
         if an.endswith(SUFFIX_POS):
             jn = joint_name_from_actuator(an)
             data.ctrl[aid] = float(full_posture[jn])
+            continue
+        # Unitree Dex3 MJCF: ``<position name=\"joint_name\" joint=\"joint_name\"/>`` (no ``_pos_actuator`` suffix).
+        if an in full_posture:
+            data.ctrl[aid] = float(full_posture[an])
             continue
         data.ctrl[aid] = 0.0
 
@@ -882,6 +890,7 @@ def run_g1_grasp_box(
             full_posture_from_ik(q_work),
             actuator_ids,
             proxy_slide_target=proxy_finger_target,
+            use_legacy_proxy_finger_motors=True,
         )
 
         data.xfrc_applied[:] = 0.0

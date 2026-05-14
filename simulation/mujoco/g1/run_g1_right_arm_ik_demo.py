@@ -57,8 +57,8 @@ IK_CHAIN_KP_SCALE = 0.42
 BEHIND_PELVIS_THRESHOLD = -0.05
 
 IK_FD_EPS = 8e-5
-IK_LAMBDA = 2.5e-3
-IK_MAX_DQ = 0.10
+IK_LAMBDA = 6.0e-3
+IK_MAX_DQ = 0.04
 IK_INNER_ITERS = 28
 IK_POS_TOL = 5e-4
 IK_POSTURE_GAIN = 0.03
@@ -135,6 +135,86 @@ def _ik_jacobian_fd(
     return jac, p0
 
 
+def _fk_ik_site_xmat(
+    model: mujoco.MjModel,
+    fd: mujoco.MjData,
+    main_qpos: np.ndarray,
+    ik_qpos_adrs: list[int],
+    q_work: np.ndarray,
+    target_site_id: int,
+) -> np.ndarray:
+    np.copyto(fd.qpos, main_qpos)
+    for i, adr in enumerate(ik_qpos_adrs):
+        fd.qpos[adr] = float(q_work[i])
+    fd.qvel[:] = 0.0
+    mujoco.mj_forward(model, fd)
+    return np.asarray(fd.site_xmat[target_site_id], dtype=float).reshape(3, 3).copy()
+
+
+def _axis_align_err(n_curr: np.ndarray, n_des: np.ndarray) -> np.ndarray:
+    nc = np.asarray(n_curr, dtype=float).reshape(3,)
+    nd = np.asarray(n_des, dtype=float).reshape(3,)
+    nc_norm = float(np.linalg.norm(nc))
+    nd_norm = float(np.linalg.norm(nd))
+    if nc_norm < 1e-12 or nd_norm < 1e-12:
+        return np.zeros(3, dtype=float)
+    nc = nc / nc_norm
+    nd = nd / nd_norm
+    return np.cross(nc, nd)
+
+
+def _ik_jacobian_axis_fd(
+    model: mujoco.MjModel,
+    fd: mujoco.MjData,
+    main_qpos: np.ndarray,
+    ik_qpos_adrs: list[int],
+    q_work: np.ndarray,
+    target_site_id: int,
+    n_des: np.ndarray,
+    eps: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Jacobian (3 x n) of ``cross(n_curr, n_des)`` w.r.t. q (finite differences)."""
+    n = len(ik_qpos_adrs)
+    R0 = _fk_ik_site_xmat(model, fd, main_qpos, ik_qpos_adrs, q_work, target_site_id)
+    n0 = R0[:, 0].copy()
+    e0 = _axis_align_err(n0, n_des)
+    jac = np.zeros((3, n), dtype=float)
+    for j in range(n):
+        q_pert = np.array(q_work, dtype=float, copy=True)
+        q_pert[j] += eps
+        R1 = _fk_ik_site_xmat(model, fd, main_qpos, ik_qpos_adrs, q_pert, target_site_id)
+        n1 = R1[:, 0]
+        e1 = _axis_align_err(n1, n_des)
+        jac[:, j] = (e1 - e0) / eps
+    return jac, e0
+
+
+def _ik_jacobian_up_fd(
+    model: mujoco.MjModel,
+    fd: mujoco.MjData,
+    main_qpos: np.ndarray,
+    ik_qpos_adrs: list[int],
+    q_work: np.ndarray,
+    target_site_id: int,
+    z_des: np.ndarray,
+    eps: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Jacobian (3 x n) of ``cross(z_curr, z_des)`` for site local z axis in world."""
+    n = len(ik_qpos_adrs)
+    R0 = _fk_ik_site_xmat(model, fd, main_qpos, ik_qpos_adrs, q_work, target_site_id)
+    z0 = R0[:, 2].copy()
+    e0 = _axis_align_err(z0, z_des)
+    jac = np.zeros((3, n), dtype=float)
+    for j in range(n):
+        q_pert = np.array(q_work, dtype=float, copy=True)
+        q_pert[j] += eps
+        R1 = _fk_ik_site_xmat(model, fd, main_qpos, ik_qpos_adrs, q_pert, target_site_id)
+        z1 = R1[:, 2]
+        e1 = _axis_align_err(z1, z_des)
+        jac[:, j] = (e1 - e0) / eps
+    return jac, e0
+
+
 def _dls_nullspace_posture_step(
     jac: np.ndarray,
     err: np.ndarray,
@@ -145,13 +225,28 @@ def _dls_nullspace_posture_step(
     posture_gain: float,
 ) -> np.ndarray:
     """Task DLS step plus nullspace posture bias toward ``q_neutral``."""
-    jjt = jac @ jac.T + lam * np.eye(3, dtype=float)
+    return _dls_nullspace_posture_step_general(
+        jac, err, lam, max_dq, q_work, q_neutral, posture_gain
+    )
+
+
+def _dls_nullspace_posture_step_general(
+    jac: np.ndarray,
+    err: np.ndarray,
+    lam: float,
+    max_dq: float,
+    q_work: np.ndarray,
+    q_neutral: np.ndarray,
+    posture_gain: float,
+) -> np.ndarray:
+    """DLS for ``m×n`` task Jacobian plus nullspace posture bias."""
+    m, n = jac.shape
+    jjt = jac @ jac.T + lam * np.eye(m, dtype=float)
     dq_task = jac.T @ np.linalg.solve(jjt, err)
     dq_posture = -posture_gain * (q_work - q_neutral)
 
-    # N = I - J.T @ inv(J J.T + lam I) @ J
     rhs = np.linalg.solve(jjt, jac)
-    nmat = np.eye(jac.shape[1], dtype=float) - jac.T @ rhs
+    nmat = np.eye(n, dtype=float) - jac.T @ rhs
     dq = dq_task + nmat @ dq_posture
 
     dq_norm = float(np.linalg.norm(dq))
@@ -214,6 +309,11 @@ def solve_ik_q(
     max_abs_joint_from_neutral: float,
     target_site_id: int = -1,
     inner_iters: int | None = None,
+    palm_axis_target_world: np.ndarray | None = None,
+    palm_axis_task_gain: float = 0.0,
+    palm_up_target_world: np.ndarray | None = None,
+    palm_up_task_gain: float = 0.0,
+    position_task_gain: float = 1.0,
 ) -> tuple[np.ndarray, float]:
     q_work = np.array([float(data.qpos[adr]) for adr in ik_qpos_adrs], dtype=float)
     main_qpos = np.asarray(data.qpos, dtype=float).copy()
@@ -221,8 +321,28 @@ def solve_ik_q(
     q_band_high = np.minimum(q_high, q_neutral_ik + float(max_abs_joint_from_neutral))
     err_norm = 0.0
     n_inner = IK_INNER_ITERS if inner_iters is None else int(inner_iters)
+    use_ori = (
+        target_site_id >= 0
+        and (
+            (palm_axis_task_gain > 1e-12 and palm_axis_target_world is not None)
+            or (palm_up_task_gain > 1e-12 and palm_up_target_world is not None)
+        )
+    )
+    n_des = (
+        np.asarray(palm_axis_target_world, dtype=float).reshape(3,)
+        if palm_axis_target_world is not None
+        else np.zeros(3, dtype=float)
+    )
+    z_des = (
+        np.asarray(palm_up_target_world, dtype=float).reshape(3,)
+        if palm_up_target_world is not None
+        else np.zeros(3, dtype=float)
+    )
+    ga = float(palm_axis_task_gain)
+    gu = float(palm_up_task_gain)
+
     for _ in range(max(1, n_inner)):
-        jac, pos = _ik_jacobian_fd(
+        jac_pos, pos = _ik_jacobian_fd(
             model,
             fd,
             main_qpos,
@@ -232,11 +352,49 @@ def solve_ik_q(
             target_site_id,
             IK_FD_EPS,
         )
-        err = np.asarray(target_xyz, dtype=float) - pos
-        err_norm = float(np.linalg.norm(err))
-        if err_norm < IK_POS_TOL:
+        raw_err_pos = np.asarray(target_xyz, dtype=float) - pos
+        err_norm = float(np.linalg.norm(raw_err_pos))
+        pg = float(position_task_gain)
+        err_pos = pg * raw_err_pos
+
+        if not use_ori:
+            jac = pg * jac_pos
+            err = err_pos
+        else:
+            rows = [pg * jac_pos]
+            errs = [err_pos]
+            if ga > 1e-12:
+                jax_ax, e_ax = _ik_jacobian_axis_fd(
+                    model,
+                    fd,
+                    main_qpos,
+                    ik_qpos_adrs,
+                    q_work,
+                    target_site_id,
+                    n_des,
+                    IK_FD_EPS,
+                )
+                rows.append(ga * jax_ax)
+                errs.append(ga * e_ax)
+            if gu > 1e-12:
+                jax_up, e_up = _ik_jacobian_up_fd(
+                    model,
+                    fd,
+                    main_qpos,
+                    ik_qpos_adrs,
+                    q_work,
+                    target_site_id,
+                    z_des,
+                    IK_FD_EPS,
+                )
+                rows.append(gu * jax_up)
+                errs.append(gu * e_up)
+            jac = np.vstack(rows)
+            err = np.concatenate(errs)
+
+        if err_norm < IK_POS_TOL and not use_ori:
             break
-        dq = _dls_nullspace_posture_step(
+        dq = _dls_nullspace_posture_step_general(
             jac,
             err,
             IK_LAMBDA,
@@ -246,6 +404,9 @@ def solve_ik_q(
             posture_gain,
         )
         q_work = np.minimum(np.maximum(q_work + dq, q_band_low), q_band_high)
+        if err_norm < IK_POS_TOL and use_ori:
+            # Continue a few iterations for soft orientation — outer loop count caps work.
+            pass
     return q_work, err_norm
 
 
