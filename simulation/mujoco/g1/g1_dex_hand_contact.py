@@ -176,3 +176,71 @@ def dex3_per_hand_grasp_contact_ready(*, palm_contacts: int, fingertip_contacts:
     pc = int(palm_contacts)
     fc = int(fingertip_contacts)
     return bool(fc >= 1 and (pc >= 1 or fc >= 2))
+
+
+def dex3_digit_geom_ids_by_role(model: mujoco.MjModel, *, side: str) -> dict[str, set[int]]:
+    """Thumb / index / middle collision geoms for fingertip–box distance metrics."""
+    if side not in ("left", "right"):
+        raise ValueError(side)
+    px = f"{side}_"
+    roles: dict[str, tuple[str, ...]] = {
+        "thumb": ("thumb_2_link",),
+        "index": ("index_1_link",),
+        "middle": ("middle_1_link",),
+    }
+    out: dict[str, set[int]] = {k: set() for k in roles}
+    for gid in range(model.ngeom):
+        bid = int(model.geom_bodyid[gid])
+        bname = model.body(bid).name or ""
+        if not bname.startswith(px):
+            continue
+        ct = int(model.geom_contype[gid])
+        ca = int(model.geom_conaffinity[gid])
+        if ct == 0 and ca == 0:
+            continue
+        for role, tags in roles.items():
+            if any(t in bname for t in tags):
+                out[role].add(int(gid))
+    return out
+
+
+def dex3_digit_box_distances(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    *,
+    box_gid: int,
+    side: str,
+    dist_cap: float = 0.18,
+) -> dict[str, float]:
+    """Minimum convex distance (m) from each digit role's geoms to the box geom."""
+    digits = dex3_digit_geom_ids_by_role(model, side=side)
+    box_set = {int(box_gid)}
+    return {
+        "thumb": min_geom_pair_distance(model, data, digits["thumb"], box_set, dist_cap=dist_cap),
+        "index": min_geom_pair_distance(model, data, digits["index"], box_set, dist_cap=dist_cap),
+        "middle": min_geom_pair_distance(model, data, digits["middle"], box_set, dist_cap=dist_cap),
+    }
+
+
+def dex3_per_hand_lift_ready_relaxed(
+    *,
+    side_face_ok: bool,
+    palm_contacts: int,
+    fingertip_contacts: int,
+    min_digit_to_box_m: float,
+    near_threshold_m: float = 0.032,
+) -> bool:
+    """
+    Grasp readiness for lift gating: side geometry satisfied and either real finger contact
+    or a fingertip digit within ``near_threshold_m`` of the box.
+    """
+    if not bool(side_face_ok):
+        return False
+    fc = int(fingertip_contacts)
+    if fc >= 1:
+        return True
+    if float(min_digit_to_box_m) + 1e-9 <= float(near_threshold_m):
+        return True
+    if int(palm_contacts) >= 1 and float(min_digit_to_box_m) + 1e-9 <= float(near_threshold_m) * 1.35:
+        return True
+    return False

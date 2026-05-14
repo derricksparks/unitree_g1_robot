@@ -20,6 +20,7 @@ if str(G1_DIR) not in sys.path:
 from g1_dex_hand_contact import (  # noqa: E402
     dex3_finger_clearance_metrics,
     dex3_per_hand_grasp_contact_ready,
+    dex3_per_hand_lift_ready_relaxed,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -33,6 +34,23 @@ def test_dex3_per_hand_grasp_contact_ready_logic():
     assert dex3_per_hand_grasp_contact_ready(palm_contacts=0, fingertip_contacts=1) is False
     assert dex3_per_hand_grasp_contact_ready(palm_contacts=1, fingertip_contacts=1) is True
     assert dex3_per_hand_grasp_contact_ready(palm_contacts=0, fingertip_contacts=2) is True
+
+
+def test_dex3_per_hand_lift_ready_relaxed_near_digit():
+    assert dex3_per_hand_lift_ready_relaxed(
+        side_face_ok=True,
+        palm_contacts=0,
+        fingertip_contacts=0,
+        min_digit_to_box_m=0.02,
+        near_threshold_m=0.032,
+    )
+    assert not dex3_per_hand_lift_ready_relaxed(
+        side_face_ok=False,
+        palm_contacts=1,
+        fingertip_contacts=1,
+        min_digit_to_box_m=0.0,
+        near_threshold_m=0.032,
+    )
 
 
 def test_dex3_finger_clearance_metrics_on_dex3_scene():

@@ -93,6 +93,19 @@ _FINGER_LIFT_HOLD_R: dict[str, float] = {
 _FINGER_RELEASE_L: dict[str, float] = dict(_FINGER_PREGRASP_SPREAD_L)
 _FINGER_RELEASE_R: dict[str, float] = dict(_FINGER_PREGRASP_SPREAD_R)
 
+
+def _blend_postures(
+    a: dict[str, float], b: dict[str, float], u: float
+) -> dict[str, float]:
+    uu = float(np.clip(u, 0.0, 1.0))
+    return {k: float((1.0 - uu) * float(a[k]) + uu * float(b[k])) for k in a.keys()}
+
+
+_LIGHT_SIDE_PREPARE_L = _blend_postures(_FINGER_PREGRASP_SPREAD_L, _FINGER_SIDE_SUPPORT_L, 0.32)
+_LIGHT_SIDE_PREPARE_R = _blend_postures(_FINGER_PREGRASP_SPREAD_R, _FINGER_SIDE_SUPPORT_R, 0.32)
+_SIDE_SUPPORT_PARTIAL_L = _blend_postures(_FINGER_PREGRASP_SPREAD_L, _FINGER_SIDE_SUPPORT_L, 0.38)
+_SIDE_SUPPORT_PARTIAL_R = _blend_postures(_FINGER_PREGRASP_SPREAD_R, _FINGER_SIDE_SUPPORT_R, 0.38)
+
 # Legacy aliases (single posture for both hands)
 _FINGER_OPEN_L = _FINGER_OPEN_HAND_L
 _FINGER_OPEN_R = _FINGER_OPEN_HAND_R
@@ -172,6 +185,10 @@ class Dex3FingerController:
             return {**_FINGER_OPEN_HAND_L, **_FINGER_OPEN_HAND_R}
         if mode in ("pregrasp_spread", "pregrasp"):
             return {**_FINGER_PREGRASP_SPREAD_L, **_FINGER_PREGRASP_SPREAD_R}
+        if mode == "light_side_prepare":
+            return {**_LIGHT_SIDE_PREPARE_L, **_LIGHT_SIDE_PREPARE_R}
+        if mode == "side_support_partial":
+            return {**_SIDE_SUPPORT_PARTIAL_L, **_SIDE_SUPPORT_PARTIAL_R}
         if mode in ("side_support_grasp", "close", "closed", "grasp"):
             return {**_FINGER_SIDE_SUPPORT_L, **_FINGER_SIDE_SUPPORT_R}
         if mode == "lift_hold_grasp":
@@ -179,6 +196,10 @@ class Dex3FingerController:
         if mode == "release":
             return {**_FINGER_RELEASE_L, **_FINGER_RELEASE_R}
         raise ValueError(f"unknown finger mode {mode!r}")
+
+    def state_snapshot(self) -> dict[str, float]:
+        """Current low-passed finger joint targets (for hold-freeze without advancing posture)."""
+        return dict(self._state)
 
     def step(self, mode: str) -> dict[str, float]:
         raw = self.targets_for_mode(mode)
