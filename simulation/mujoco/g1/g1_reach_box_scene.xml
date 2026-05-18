@@ -20,7 +20,8 @@
       <site name="box_near_face_center_site" type="sphere" size="0.005" pos="-0.05 0 -0.02" rgba="1 1 0 1" group="2"/>
       <!-- Face-centered anchors at grasp height (local z ≈ −0.02); perception sync overwrites pos each frame. -->
       <site name="box_right_contact_site" type="sphere" size="0.005" pos="0 -0.05 -0.02" rgba="0 0 1 1" group="2"/>
-      <site name="box_left_contact_site" type="sphere" size="0.005" pos="0 0.05 -0.02" rgba="0 1 0 1" group="2"/>
+      <site name="box_left_contact_site" type="sphere" size="0.005" pos="0 0.05 -0.02" rgba="0 0 1 1" group="2"/>
+      <site name="box_left_middle_contact_site" type="sphere" size="0.005" pos="0 0.05 0.012" rgba="0 0 1 1" group="2"/>
       <site name="box_front_contact_site" type="sphere" size="0.005" pos="-0.05 0 -0.02" rgba="1 1 0 1" group="2"/>
       <site name="box_right_lower_edge_site" type="sphere" size="0.005" pos="-0.05 -0.05 -0.05" rgba="0 1 1 1" group="2"/>
       <site name="box_left_lower_edge_site" type="sphere" size="0.005" pos="-0.05 0.05 -0.05" rgba="0.55 0 0.85 1" group="2"/>

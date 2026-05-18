@@ -18,7 +18,9 @@
       <site name="g1_vis_palm_approach" type="sphere" size="0.008" pos="-0.10 0 0.08" rgba="0 1 1 1" group="2"/>
       <site name="box_near_face_center_site" type="sphere" size="0.006" pos="-0.08 0 -0.03" rgba="1 1 0 1" group="2"/>
       <site name="box_right_contact_site" type="sphere" size="0.006" pos="0 -0.07 -0.03" rgba="0 0 1 1" group="2"/>
-      <site name="box_left_contact_site" type="sphere" size="0.006" pos="0 0.07 -0.03" rgba="0 1 0 1" group="2"/>
+      <site name="box_right_middle_contact_site" type="sphere" size="0.006" pos="0 -0.07 0.028" rgba="0 0 1 1" group="2"/>
+      <site name="box_left_contact_site" type="sphere" size="0.006" pos="0 0.07 -0.03" rgba="0 0 1 1" group="2"/>
+      <site name="box_left_middle_contact_site" type="sphere" size="0.006" pos="0 0.07 0.028" rgba="0 0 1 1" group="2"/>
       <site name="box_front_contact_site" type="sphere" size="0.006" pos="-0.08 0 -0.03" rgba="1 1 0 1" group="2"/>
       <site name="box_right_lower_edge_site" type="sphere" size="0.006" pos="-0.08 -0.07 -0.055" rgba="0 1 1 1" group="2"/>
       <site name="box_left_lower_edge_site" type="sphere" size="0.006" pos="-0.08 0.07 -0.055" rgba="0.55 0 0.85 1" group="2"/>

@@ -27,8 +27,10 @@ from g1_precontact import (
     PALM_SURFACE_CLEARANCE,
 )
 
-# Dual-arm side grasp: nominal gap from each ±y face plane to the palm plate (≈1 cm shallow approach).
-DUAL_SURFACE_CONTACT_CLEARANCE_Y_M = 0.010
+# Dual-arm side grasp: nominal gap from each ±y face plane to the palm plate.
+# Dex3 fingers need the palm to stay clearly outside the side faces so closure
+# wraps around edges instead of turning into a palm-driven squeeze.
+DUAL_SURFACE_CONTACT_CLEARANCE_Y_M = 0.012
 # Additional inward motion allowed from contact solver / numerical compliance (diagnostic budget).
 DUAL_ALLOWED_SURFACE_COMPRESSION_M = 0.003
 
@@ -53,7 +55,9 @@ class G1BoxPerceptionResult:
     left_dual_approach_target: np.ndarray
     viz_near_face_center_world: np.ndarray
     viz_right_contact_world: np.ndarray
+    viz_right_middle_contact_world: np.ndarray
     viz_left_contact_world: np.ndarray
+    viz_left_middle_contact_world: np.ndarray
     viz_right_lower_edge_world: np.ndarray
     viz_left_lower_edge_world: np.ndarray
     viz_front_contact_world: np.ndarray
@@ -82,7 +86,13 @@ class G1BoxPerceptionResult:
             "left_dual_approach_target": self.left_dual_approach_target.astype(float).copy(),
             "viz_near_face_center_world": self.viz_near_face_center_world.astype(float).copy(),
             "viz_right_contact_world": self.viz_right_contact_world.astype(float).copy(),
+            "viz_right_middle_contact_world": self.viz_right_middle_contact_world.astype(
+                float
+            ).copy(),
             "viz_left_contact_world": self.viz_left_contact_world.astype(float).copy(),
+            "viz_left_middle_contact_world": self.viz_left_middle_contact_world.astype(
+                float
+            ).copy(),
             "viz_right_lower_edge_world": self.viz_right_lower_edge_world.astype(float).copy(),
             "viz_left_lower_edge_world": self.viz_left_lower_edge_world.astype(float).copy(),
             "viz_front_contact_world": self.viz_front_contact_world.astype(float).copy(),
@@ -96,7 +106,9 @@ VIS_SITE_APPROACH = "g1_vis_palm_approach"
 
 SITE_BOX_NEAR_FACE_CENTER = "box_near_face_center_site"
 SITE_BOX_RIGHT_CONTACT = "box_right_contact_site"
+SITE_BOX_RIGHT_MIDDLE_CONTACT = "box_right_middle_contact_site"
 SITE_BOX_LEFT_CONTACT = "box_left_contact_site"
+SITE_BOX_LEFT_MIDDLE_CONTACT = "box_left_middle_contact_site"
 SITE_BOX_RIGHT_LOWER_EDGE = "box_right_lower_edge_site"
 SITE_BOX_LEFT_LOWER_EDGE = "box_left_lower_edge_site"
 SITE_BOX_FRONT_CONTACT = "box_front_contact_site"
@@ -193,9 +205,24 @@ class G1BoxPerception:
             viz_near_face_center_world = np.array([near_face_x, cy, gz], dtype=float)
 
         # Debug anchors: face centers at grasp height (sites slide with perception sync).
-        cx = float(center[0])
-        viz_right_contact_world = np.array([cx, left_edge_y, gz])
-        viz_left_contact_world = np.array([cx, right_edge_y, gz])
+        cxw = float(center[0])
+        hx = float(h[0])
+        # Right-hand index/middle column on the −y face (matches Dex3 reach, not box center x).
+        finger_col_x = cxw - 0.22 * hx
+        # Index/middle sit on slightly different z on the face; blue site is their midpoint.
+        # Dex3 palm: index/middle bases offset ±0.0285 m in hand z; use reachable z on the face.
+        right_digit_z_sep_m = 0.032
+        right_index_face = np.array([finger_col_x, left_edge_y, gz], dtype=float)
+        right_middle_face = np.array(
+            [finger_col_x, left_edge_y, gz + right_digit_z_sep_m], dtype=float
+        )
+        viz_right_contact_world = right_index_face.copy()
+        viz_right_middle_contact_world = right_middle_face.copy()
+        left_digit_z_sep_m = right_digit_z_sep_m
+        viz_left_contact_world = np.array([finger_col_x, right_edge_y, gz])
+        viz_left_middle_contact_world = np.array(
+            [finger_col_x, right_edge_y, gz + left_digit_z_sep_m], dtype=float
+        )
         viz_front_contact_world = np.array([near_face_x, cy, gz])
 
         rr_corner = verts[
@@ -238,23 +265,25 @@ class G1BoxPerception:
             left_dual_approach_target=left_dual_approach_target,
             viz_near_face_center_world=viz_near_face_center_world,
             viz_right_contact_world=viz_right_contact_world,
+            viz_right_middle_contact_world=viz_right_middle_contact_world,
             viz_left_contact_world=viz_left_contact_world,
+            viz_left_middle_contact_world=viz_left_middle_contact_world,
             viz_right_lower_edge_world=viz_right_lower_edge_world,
             viz_left_lower_edge_world=viz_left_lower_edge_world,
             viz_front_contact_world=viz_front_contact_world,
         )
         out = res.as_dict()
         # Dex3 semantic grasp hints (world): index/middle on ±y faces, thumbs oppose inward/up, lower support.
-        cxw = float(center[0])
         hz = float(grasp_height_z)
         hx, hz_box = float(h[0]), float(h[2])
         lo_z = float(bottom_z) + 0.18 * float(top_z - bottom_z)
-        off_face = 0.012 + 0.04 * float(dual_side_clearance_y_m)
-        out["dex3_right_index_target_world"] = np.array(
-            [cxw - 0.22 * hx, float(left_edge_y) - off_face, hz], dtype=float
+        off_face = 0.013 + 0.12 * float(dual_side_clearance_y_m)
+        # Per-digit face targets; blue site is the midpoint (``viz_right_contact_world``).
+        out["dex3_right_index_target_world"] = right_index_face + np.array(
+            [0.0, -off_face * 0.5, 0.0], dtype=float
         )
-        out["dex3_right_middle_target_world"] = np.array(
-            [cxw + 0.18 * hx, float(left_edge_y) - off_face, hz], dtype=float
+        out["dex3_right_middle_target_world"] = right_middle_face + np.array(
+            [0.0, -off_face * 0.5, 0.0], dtype=float
         )
         out["dex3_right_thumb_target_world"] = np.array(
             [cxw - 0.42 * hx, float(left_edge_y) - off_face * 2.0, hz + 0.025 * hz_box], dtype=float
@@ -263,10 +292,10 @@ class G1BoxPerception:
             [cxw + 0.05 * hx, float(left_edge_y) - off_face * 0.5, lo_z], dtype=float
         )
         out["dex3_left_index_target_world"] = np.array(
-            [cxw - 0.22 * hx, float(right_edge_y) + off_face, hz], dtype=float
+            [cxw - 0.22 * hx, float(right_edge_y) + off_face * 0.5, hz], dtype=float
         )
         out["dex3_left_middle_target_world"] = np.array(
-            [cxw + 0.18 * hx, float(right_edge_y) + off_face, hz], dtype=float
+            [cxw - 0.22 * hx, float(right_edge_y) + off_face * 0.5, hz], dtype=float
         )
         out["dex3_left_thumb_target_world"] = np.array(
             [cxw - 0.42 * hx, float(right_edge_y) + off_face * 2.0, hz + 0.025 * hz_box], dtype=float
@@ -303,7 +332,9 @@ class G1BoxPerception:
             (VIS_SITE_APPROACH, perception["palm_approach_target"]),
             (SITE_BOX_NEAR_FACE_CENTER, perception["viz_near_face_center_world"]),
             (SITE_BOX_RIGHT_CONTACT, perception["viz_right_contact_world"]),
+            (SITE_BOX_RIGHT_MIDDLE_CONTACT, perception["viz_right_middle_contact_world"]),
             (SITE_BOX_LEFT_CONTACT, perception["viz_left_contact_world"]),
+            (SITE_BOX_LEFT_MIDDLE_CONTACT, perception["viz_left_middle_contact_world"]),
             (SITE_BOX_RIGHT_LOWER_EDGE, perception["viz_right_lower_edge_world"]),
             (SITE_BOX_LEFT_LOWER_EDGE, perception["viz_left_lower_edge_world"]),
             (SITE_BOX_FRONT_CONTACT, perception["viz_front_contact_world"]),

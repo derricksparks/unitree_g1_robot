@@ -37,9 +37,10 @@ import sys
 import tempfile
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 import mujoco
 import numpy as np
@@ -68,9 +69,11 @@ from g1_precontact import (  # noqa: E402
 )
 from g1_dex3_finger_control import (  # noqa: E402
     Dex3FingerController,
+    dex3_digit_joint_names,
     merge_dex3_neutral_into,
 )
 from g1_dex_hand_contact import (  # noqa: E402
+    digit_contact_counts_by_role,
     dex3_digit_box_distances,
     dex3_finger_clearance_metrics,
     dex3_per_hand_lift_ready_relaxed,
@@ -153,13 +156,20 @@ DEX3_LIFT_CONTACT_SETTLE_TIME_S = 0.30
 DEX3_STICKY_CONTACT_LEAK = 0.48
 DEX3_PALM_NORMAL_OK = 0.18
 DEX3_PALM_NORMAL_CLOSE_OK = 0.14
+DEX3_PALM_UP_OK = 0.42
+DEX3_CLEAN_PENETRATION_CAP_M = 0.010
+DEX3_DIGIT_HOLD_NEAR_BOX_M = 0.010
+# Freeze digit joints once MuJoCo contact or within this distance (m) of the box.
+DEX3_DIGIT_CONTACT_FREEZE_DIST_M = 0.012
+DEX3_DIGIT_APPROACH_MAX_DELTA_RAD = 0.011
+DEX3_DIGIT_OPEN_PENETRATION_M = 0.0085
 # Stop closing fingers if distal geoms from opposite hands approach this close (m).
 DEX3_CROSS_HAND_FINGER_STOP_M = 0.034
-DEX3_FINGERTIP_NEAR_BOX_M = 0.032
+DEX3_FINGERTIP_NEAR_BOX_M = 0.040
 # Soft palm orientation — heavily damped (was fighting wrists); authority scaled ~72% down vs legacy.
-PALM_AXIS_GAIN_BASE = 0.52
-PALM_UP_GAIN_BASE = 0.20
-ORI_AUTHORITY_SCALE = 0.28
+PALM_AXIS_GAIN_BASE = 0.62
+PALM_UP_GAIN_BASE = 0.28
+ORI_AUTHORITY_SCALE = 0.34
 RIGHT_ORI_GAIN_MUL = 1.0
 LEFT_ORI_GAIN_MUL = 0.62
 RIGHT_POSITION_TASK_GAIN = 0.92
@@ -227,6 +237,76 @@ DEFAULT_DUAL_ARM_TIMEOUT_S = 24.0
 FAST_DUAL_ARM_TIMEOUT_CAP_S = 12.0
 LEFT_ARM_NEUTRAL_DRIFT_ALPHA = 0.055
 
+# Runtime timeline compression (>1 reaches contact / finger phases sooner in sim time).
+_ACTIVE_TIMELINE_SPEED = 1.0
+
+
+@dataclass(frozen=True)
+class SimMotionProfile:
+    """Joint / finger rate limits and IK budget for a run (wall-clock + apparent motion)."""
+
+    physics_timestep_s: float
+    max_arm_joint_step_rad: float
+    max_waist_joint_step_rad: float
+    right_cmd_max_delta_rad: float
+    left_cmd_max_delta_rad: float
+    right_cmd_lp_alpha: float
+    left_cmd_lp_alpha: float
+    pr_goal_filter_alpha: float
+    finger_max_delta_rad: float
+    finger_lp_alpha: float
+    digit_approach_max_delta_rad: float
+    ik_iter_scale: float
+    timeline_speed: float
+    viewer_playback_mul: float
+    sequential_right_hold_frames: int
+
+
+def _sim_motion_profile(*, fast: bool) -> SimMotionProfile:
+    if fast:
+        return SimMotionProfile(
+            physics_timestep_s=0.005,
+            max_arm_joint_step_rad=0.032,
+            max_waist_joint_step_rad=0.012,
+            right_cmd_max_delta_rad=0.024,
+            left_cmd_max_delta_rad=0.026,
+            right_cmd_lp_alpha=0.18,
+            left_cmd_lp_alpha=0.14,
+            pr_goal_filter_alpha=0.32,
+            finger_max_delta_rad=0.034,
+            finger_lp_alpha=0.34,
+            digit_approach_max_delta_rad=0.022,
+            ik_iter_scale=0.72,
+            timeline_speed=1.48,
+            viewer_playback_mul=2.8,
+            sequential_right_hold_frames=5,
+        )
+    return SimMotionProfile(
+        physics_timestep_s=0.004,
+        max_arm_joint_step_rad=0.023,
+        max_waist_joint_step_rad=0.010,
+        right_cmd_max_delta_rad=0.018,
+        left_cmd_max_delta_rad=0.020,
+        right_cmd_lp_alpha=0.14,
+        left_cmd_lp_alpha=0.11,
+        pr_goal_filter_alpha=0.28,
+        finger_max_delta_rad=0.027,
+        finger_lp_alpha=0.30,
+        digit_approach_max_delta_rad=0.017,
+        ik_iter_scale=0.86,
+        timeline_speed=1.24,
+        viewer_playback_mul=1.85,
+        sequential_right_hold_frames=6,
+    )
+
+
+def _apply_physics_timestep(model: mujoco.MjModel, target_dt_s: float) -> float:
+    """Coarsen integrator step for fewer steps per simulated second (returns applied dt)."""
+    dt0 = float(model.opt.timestep)
+    tgt = float(max(dt0, target_dt_s))
+    model.opt.timestep = tgt
+    return tgt
+
 # IK iteration budgets (hierarchical stages).
 IK_ITERS_RIGHT_LEAD = 11
 IK_ITERS_RIGHT_SOFT = 5
@@ -255,6 +335,17 @@ _POST_GATE_FRACS: tuple[tuple[str, float], ...] = (
     ("open", 0.058),
     ("retreat", 0.256),
 )
+# Finger placement only: long close + hold on box; no lift / lower.
+_POST_GATE_FRACS_FINGER_PLACE: tuple[tuple[str, float], ...] = (
+    ("close", 0.14),
+    ("grasp_hold", 0.76),
+    ("open", 0.05),
+    ("retreat", 0.05),
+)
+
+
+def _post_gate_fracs(*, finger_place_only: bool) -> tuple[tuple[str, float], ...]:
+    return _POST_GATE_FRACS_FINGER_PLACE if finger_place_only else _POST_GATE_FRACS
 
 DUAL_IK_JOINT_NAMES: tuple[str, ...] = (
     "waist_yaw_joint",
@@ -313,6 +404,10 @@ WRIST_JOINT_NAMES_DUAL: tuple[str, ...] = (
 )
 RIGHT_WRIST_JOINT_NAMES_DUAL = tuple(j for j in WRIST_JOINT_NAMES_DUAL if j.startswith("right_"))
 LEFT_WRIST_JOINT_NAMES_DUAL = tuple(j for j in WRIST_JOINT_NAMES_DUAL if j.startswith("left_"))
+RIGHT_WRIST_ROLL_YAW_JOINTS = ("right_wrist_roll_joint", "right_wrist_yaw_joint")
+LEFT_WRIST_ROLL_YAW_JOINTS = ("left_wrist_roll_joint", "left_wrist_yaw_joint")
+RIGHT_WRIST_PITCH_JOINT = "right_wrist_pitch_joint"
+LEFT_WRIST_PITCH_JOINT = "left_wrist_pitch_joint"
 
 
 class DualPhase(Enum):
@@ -329,6 +424,11 @@ class DualPhase(Enum):
     DONE = auto()
 
 
+FINGER_REACH_WRIST_PHASES = frozenset(
+    {DualPhase.DUAL_CONTACT_HOLD, DualPhase.CLOSE_PROXY_HANDS}
+)
+
+
 class CoordinationMode(Enum):
     """Monotonic dual-arm policy: right owns waist until freeze, then locked torso + arm-only solves."""
 
@@ -343,6 +443,7 @@ def _dex3_effective_finger_mode(
     safety_stop: bool,
     closure_block: str | None,
     palms_aligned_for_close: bool,
+    finger_place_only: bool = False,
 ) -> str:
     """Dex3 finger posture vs timeline (enum still uses *PROXY* for legacy compatibility)."""
     if safety_stop:
@@ -354,11 +455,15 @@ def _dex3_effective_finger_mode(
     if phase == DualPhase.DUAL_DESCEND_TO_PREGRASP:
         return "light_side_prepare"
     if phase == DualPhase.DUAL_CONTACT_HOLD:
+        if finger_place_only:
+            return "light_side_prepare"
         return "side_support_partial"
     if phase == DualPhase.CLOSE_PROXY_HANDS:
-        if closure_block:
+        if closure_block and not finger_place_only:
             return "pregrasp_spread"
-        return "side_support_grasp" if palms_aligned_for_close else "side_support_partial"
+        if finger_place_only or palms_aligned_for_close:
+            return "side_support_grasp"
+        return "side_support_partial"
     if phase in (DualPhase.OPEN_PROXY_HANDS,):
         return "release"
     if phase in (DualPhase.RETREAT, DualPhase.DONE):
@@ -366,8 +471,12 @@ def _dex3_effective_finger_mode(
     if phase == DualPhase.DUAL_GRASP_HOLD:
         if closure_block:
             return "pregrasp_spread"
+        if finger_place_only:
+            return "side_support_grasp"
         return "lift_hold_grasp"
     if phase in (DualPhase.DUAL_LIFT_TEST, DualPhase.DUAL_LOWER_BACK):
+        if finger_place_only:
+            return "side_support_grasp"
         return "lift_hold_grasp"
     return "open_hand"
 
@@ -382,6 +491,101 @@ ORIENTATION_SOFT_PHASES = frozenset(
         DualPhase.DUAL_LIFT_TEST,
     }
 )
+
+# Freeze palm/wrist orientation targets during side grasp + close + lift (no re-aiming).
+WRIST_ORIENTATION_LOCK_PHASES = frozenset(
+    {
+        DualPhase.DUAL_CONTACT_HOLD,
+        DualPhase.CLOSE_PROXY_HANDS,
+        DualPhase.DUAL_GRASP_HOLD,
+        DualPhase.DUAL_LIFT_TEST,
+        DualPhase.DUAL_LOWER_BACK,
+    }
+)
+WRIST_LOCK_PALM_SETTLE_S = 0.10
+WRIST_LOCK_INNER_ITERS_SCALE = 0.52
+WRIST_LOCK_MAX_WRIST_CMD_DELTA_RAD = 0.0045
+WRIST_LOCK_ORI_GAIN_MUL = 0.11
+WRIST_LOCK_DURATION_TRACK = True
+
+
+def _locked_site_axis_snapshot(
+    data: mujoco.MjData,
+    site_id: int,
+    nominal_axis_world: np.ndarray,
+) -> np.ndarray:
+    """Pick palm-site axis column best aligned with nominal; sign toward box interaction."""
+    nom = np.asarray(nominal_axis_world, dtype=float).reshape(3)
+    nn = float(np.linalg.norm(nom))
+    if nn < 1e-12:
+        return _site_axis_world(data, site_id, axis_col=0)
+    nom = nom / nn
+    best_ax = _site_axis_world(data, site_id, axis_col=0)
+    best_s = abs(float(np.dot(best_ax, nom)))
+    for col in (1, 2):
+        ax = _site_axis_world(data, site_id, axis_col=col)
+        s = abs(float(np.dot(ax, nom)))
+        if s > best_s:
+            best_s = s
+            best_ax = ax
+    if float(np.dot(best_ax, nom)) < 0.0:
+        best_ax = -best_ax
+    nax = float(np.linalg.norm(best_ax))
+    return best_ax / nax if nax > 1e-12 else nom
+
+
+def _locked_up_from_axis(locked_axis: np.ndarray) -> np.ndarray:
+    a = np.asarray(locked_axis, dtype=float).reshape(3)
+    na = float(np.linalg.norm(a))
+    if na < 1e-12:
+        return WORLD_UP.copy()
+    a = a / na
+    up = WORLD_UP - float(np.dot(WORLD_UP, a)) * a
+    nu = float(np.linalg.norm(up))
+    return up / nu if nu > 1e-12 else np.array([0.0, 0.0, 1.0], dtype=float)
+
+
+def _latch_wrist_roll_yaw(
+    data: mujoco.MjData,
+    joint_qpos_adr: Mapping[str, int],
+    joint_names: tuple[str, ...],
+) -> dict[str, float]:
+    """Snapshot roll/yaw hinge qpos before finger reach (orientation unfreeze)."""
+    out: dict[str, float] = {}
+    for jn in joint_names:
+        out[jn] = float(data.qpos[int(joint_qpos_adr[jn])])
+    return out
+
+
+def _wrist_lock_palm_ori_kw(axis_world: np.ndarray, up_world: np.ndarray) -> dict[str, Any]:
+    """Low-gain orientation hold (no dynamic retargeting)."""
+    mul = float(WRIST_LOCK_ORI_GAIN_MUL)
+    ga = PALM_AXIS_GAIN_BASE * ORI_AUTHORITY_SCALE * mul
+    gu = PALM_UP_GAIN_BASE * ORI_AUTHORITY_SCALE * mul
+    return {
+        "palm_axis_target_world": np.asarray(axis_world, dtype=float).reshape(3).copy(),
+        "palm_axis_task_gain": float(ga),
+        "palm_up_target_world": np.asarray(up_world, dtype=float).reshape(3).copy(),
+        "palm_up_task_gain": float(gu),
+    }
+
+
+def _palm_axis_tracking_error(
+    data: mujoco.MjData,
+    site_id: int,
+    lock_axis_world: np.ndarray,
+) -> float:
+    """0 = perfect alignment of best palm normal with locked axis; ~1 = opposite."""
+    la = np.asarray(lock_axis_world, dtype=float).reshape(3)
+    nl = float(np.linalg.norm(la))
+    if nl < 1e-12:
+        return 0.0
+    la = la / nl
+    best = -1.0
+    for col in (0, 1, 2):
+        ax = _site_axis_world(data, site_id, axis_col=col)
+        best = max(best, abs(float(np.dot(ax, la))))
+    return float(max(0.0, 1.0 - best))
 
 
 def _dex3_timeline_phase_display(phase: DualPhase, *, use_dex3: bool) -> str:
@@ -436,9 +640,10 @@ ACTIVE_ASSIST_PHASES = frozenset(
 def _dual_phase_boundaries(duration: float) -> dict[str, float]:
     """Timeline boundaries with lengthened approach/descend (+ contact hold slack)."""
     d = max(float(duration), 1e-6)
-    k_appr = 1.52
-    k_desc = 1.58
-    k_hold = 1.22
+    spd = float(max(_ACTIVE_TIMELINE_SPEED, 1.0))
+    k_appr = 1.52 * spd
+    k_desc = 1.58 * spd
+    k_hold = 1.22 * spd
     t_stow_end = 0.09 * d
     t_approach_end = t_stow_end + 0.19 * d * k_appr
     t_descend_end = t_approach_end + 0.16 * d * k_desc
@@ -480,6 +685,7 @@ def _dual_phase_effective(
     squeeze_cleared_t: float | None,
     *,
     post_gate_virtual_lag_s: float = 0.0,
+    finger_place_only: bool = False,
 ) -> DualPhase:
     """Scheduling: nominal stow→approach→descend→hold(gated), then fractional post-close timeline.
 
@@ -504,19 +710,23 @@ def _dual_phase_effective(
     pb = max(d - float(squeeze_cleared_t), 1e-9)
     t_post = t - float(post_gate_virtual_lag_s)
     dt = max(0.0, t_post - float(squeeze_cleared_t))
-    return _post_gate_budget_and_phase(dt, pb)
+    return _post_gate_budget_and_phase(dt, pb, finger_place_only=finger_place_only)
 
 
 def _post_gate_abs_spans(
-    squeeze_t: float, duration: float
+    squeeze_t: float,
+    duration: float,
+    *,
+    finger_place_only: bool = False,
 ) -> dict[str, tuple[float, float]]:
     dur = max(float(duration), 1e-9)
     t0 = float(squeeze_t)
     pb = max(dur - t0, 1e-9)
-    wt = sum(w for _, w in _POST_GATE_FRACS)
+    fracs = _post_gate_fracs(finger_place_only=finger_place_only)
+    wt = sum(w for _, w in fracs)
     t = t0
     out: dict[str, tuple[float, float]] = {}
-    for key, frac in _POST_GATE_FRACS:
+    for key, frac in fracs:
         seg = pb * frac / wt
         out[key] = (t, t + seg)
         t += seg
@@ -533,13 +743,19 @@ _POST_GATE_KEY_TO_DUAL: dict[str, DualPhase] = {
 }
 
 
-def _post_gate_budget_and_phase(dt_after_gate: float, post_budget: float) -> DualPhase:
+def _post_gate_budget_and_phase(
+    dt_after_gate: float,
+    post_budget: float,
+    *,
+    finger_place_only: bool = False,
+) -> DualPhase:
     """Map elapsed time since squeeze gate clears into post-contact timeline."""
     dt = float(max(0.0, dt_after_gate))
     pb = float(max(post_budget, 1e-6))
-    wt = sum(w for _, w in _POST_GATE_FRACS)
+    fracs = _post_gate_fracs(finger_place_only=finger_place_only)
+    wt = sum(w for _, w in fracs)
     acc = 0.0
-    for key, frac in _POST_GATE_FRACS:
+    for key, frac in fracs:
         seg = pb * (frac / wt)
         if dt < acc + seg - 1e-11:
             return _POST_GATE_KEY_TO_DUAL[key]
@@ -1021,6 +1237,10 @@ def _solve_primary_support_dual_arms(
     palm_ori_box_center: np.ndarray | None = None,
     palm_right_pre_ik_xyz: np.ndarray | None = None,
     palm_left_pre_ik_xyz: np.ndarray | None = None,
+    wrist_orientation_lock: bool = False,
+    wrist_frozen_kw_r: dict[str, Any] | None = None,
+    wrist_frozen_kw_l: dict[str, Any] | None = None,
+    ik_inner_iters_scale: float = 1.0,
     right_reject_streak: list[int],
     left_reject_streak: list[int],
     right_recovery_events: list[int],
@@ -1035,10 +1255,18 @@ def _solve_primary_support_dual_arms(
     sl = sl_base * SUPPORT_LEFT_POSTURE_SCALE
     err_r = err_l = 0.0
     rec_r = rec_l = False
+    it_scale = float(max(0.35, min(float(ik_inner_iters_scale), 1.0)))
 
     def okw(side: str) -> dict[str, Any]:
+        if wrist_orientation_lock:
+            fk = wrist_frozen_kw_r if side == "right" else wrist_frozen_kw_l
+            if fk:
+                base = dict(fk)
+                if side == "left":
+                    return _scale_palm_ori_kw(base, SUPPORT_LEFT_ORI_MUL)
+                return base
         pw = palm_right_pre_ik_xyz if side == "right" else palm_left_pre_ik_xyz
-        return _palm_ori_kw_scaled(
+        kw = _palm_ori_kw_scaled(
             phase,
             side=side,
             ori_recovery_scale=ori_recovery_scale,
@@ -1046,12 +1274,15 @@ def _solve_primary_support_dual_arms(
             box_center=palm_ori_box_center,
             palm_site_xyz=pw,
         )
+        if side == "left":
+            return _scale_palm_ori_kw(kw, SUPPORT_LEFT_ORI_MUL)
+        return kw
 
     if coordination_mode == CoordinationMode.IDLE:
         return 0.0, 0.0, False, False
 
     def _solve_left_support() -> tuple[float, bool]:
-        ori_l = _scale_palm_ori_kw(okw("left"), SUPPORT_LEFT_ORI_MUL)
+        ori_l = okw("left")
         return _solve_chain_with_recovery(
             model,
             fd,
@@ -1065,7 +1296,7 @@ def _solve_primary_support_dual_arms(
             site_id=left_site_id,
             posture_gain=posture_gain * sl,
             max_abs_dn=max_abs_dn,
-            inner_iters=IK_ITERS_LEFT_SUPPORT,
+            inner_iters=max(3, int(float(IK_ITERS_LEFT_SUPPORT) * it_scale)),
             ori_kw=ori_l,
             position_gain=pg_l,
             err_reject=IK_ERR_REJECT_LEFT_SUPPORT_M,
@@ -1088,7 +1319,7 @@ def _solve_primary_support_dual_arms(
             site_id=right_site_id,
             posture_gain=posture_gain * sr,
             max_abs_dn=max_abs_dn,
-            inner_iters=IK_ITERS_RIGHT_PRIMARY_FULL,
+            inner_iters=max(3, int(float(IK_ITERS_RIGHT_PRIMARY_FULL) * it_scale)),
             ori_kw=okw("right"),
             position_gain=pg_r,
             err_reject=IK_ERR_REJECT_M,
@@ -1127,7 +1358,7 @@ def _solve_primary_support_dual_arms(
             site_id=right_site_id,
             posture_gain=posture_gain * sr,
             max_abs_dn=max_abs_dn,
-            inner_iters=IK_ITERS_RIGHT_ARM_LOCKED,
+            inner_iters=max(3, int(float(IK_ITERS_RIGHT_ARM_LOCKED) * it_scale)),
             ori_kw=okw("right"),
             position_gain=pg_r,
             err_reject=IK_ERR_REJECT_M,
@@ -1298,6 +1529,21 @@ def _normal_alignment_score(axis_world: np.ndarray, desired_world: np.ndarray) -
     return float(np.clip(np.dot(a / na, b / nb), -1.0, 1.0))
 
 
+def _palm_normal_alignment_score(
+    data: mujoco.MjData,
+    site_id: int,
+    desired_world: np.ndarray,
+) -> float:
+    """Score whichever palm-site ±axis best represents the side-facing palm normal."""
+    desired = np.asarray(desired_world, dtype=float).reshape(3,)
+    best = -1.0
+    for col in (0, 1, 2):
+        ax = _site_axis_world(data, site_id, axis_col=col)
+        best = max(best, _normal_alignment_score(ax, desired))
+        best = max(best, _normal_alignment_score(-ax, desired))
+    return float(best)
+
+
 def _palm_up_alignment_score(data: mujoco.MjData, site_id: int) -> float:
     """How well some palm-local axis aligns with world +Z (prefer palm ``up'' not pitching down)."""
     best = 0.0
@@ -1373,6 +1619,155 @@ def _palm_ori_kw_scaled(
         "palm_up_target_world": WORLD_UP.copy(),
         "palm_up_task_gain": float(gu),
     }
+
+
+def _dex3_digit_policy(
+    *,
+    phase: DualPhase,
+    side: str,
+    side_geometry_ok: bool,
+    palm_aligned: bool,
+    palm_up_ok: bool,
+    palm_outside: bool,
+    palm_has_contact: bool,
+    wrist_orientation_locked: bool,
+    penetration_m: float,
+    penetration_prev_m: float,
+    digit_distances: dict[str, float],
+    digit_contacts: dict[str, int],
+    safety_stop: bool,
+    finger_place_only: bool = False,
+) -> dict[str, str]:
+    """Per-digit decisions: approach box contact points, then hold (no wrist re-aim)."""
+    out: dict[str, str] = {}
+    freeze_dist = float(DEX3_DIGIT_CONTACT_FREEZE_DIST_M)
+    active_phase = phase in (
+        DualPhase.DUAL_CONTACT_HOLD,
+        DualPhase.CLOSE_PROXY_HANDS,
+        DualPhase.DUAL_GRASP_HOLD,
+        DualPhase.DUAL_LIFT_TEST,
+        DualPhase.DUAL_LOWER_BACK,
+    )
+    close_allowed = bool(
+        active_phase
+        and side_geometry_ok
+        and palm_aligned
+        and palm_up_ok
+        and palm_outside
+        and not safety_stop
+        and float(penetration_m) <= float(DEX3_DIGIT_OPEN_PENETRATION_M)
+    )
+    pen_rising = float(penetration_m) > float(penetration_prev_m) + 0.0012
+
+    def _digit_touching(role: str) -> bool:
+        return int(digit_contacts.get(role, 0)) > 0 or float(
+            digit_distances.get(role, float("inf"))
+        ) <= freeze_dist
+
+    def _emit_finger_place() -> None:
+        """Slow approach; lock each digit at first box contact (stay on contact point)."""
+        may_close = bool(
+            close_allowed
+            or (
+                side_geometry_ok
+                and palm_outside
+                and not safety_stop
+                and float(penetration_m) <= float(DEX3_DIGIT_OPEN_PENETRATION_M)
+            )
+        )
+        for role in ("thumb", "index", "middle"):
+            key = f"{side}_{role}"
+            if safety_stop or float(penetration_m) > float(DEX3_CLEAN_PENETRATION_CAP_M):
+                out[key] = "open"
+                continue
+            if _digit_touching(role):
+                out[key] = "hold"
+                continue
+            d = float(digit_distances.get(role, float("inf")))
+            if pen_rising and d < 0.025:
+                out[key] = "hold"
+            elif may_close and d > float(DEX3_DIGIT_HOLD_NEAR_BOX_M) * 0.85:
+                out[key] = "close"
+            else:
+                out[key] = "hold" if active_phase else "open"
+
+    def _emit_open_hold_close_spread() -> None:
+        """Stage A: bring digits toward the box without an early pinch (thumb lags)."""
+        for role in ("thumb", "index", "middle"):
+            key = f"{side}_{role}"
+            if safety_stop or float(penetration_m) > float(DEX3_CLEAN_PENETRATION_CAP_M) or pen_rising:
+                out[key] = "open"
+                continue
+            if int(digit_contacts.get(role, 0)) > 0:
+                out[key] = "hold"
+                continue
+            d = float(digit_distances.get(role, float("inf")))
+            near = float(DEX3_DIGIT_HOLD_NEAR_BOX_M)
+            if role == "middle":
+                near *= 1.35
+            if d <= near:
+                out[key] = "hold"
+            elif close_allowed:
+                if role == "thumb" and d > 0.085:
+                    out[key] = "close"
+                elif role == "thumb":
+                    out[key] = "hold"
+                else:
+                    out[key] = "close"
+            else:
+                out[key] = "hold" if active_phase else "open"
+
+    def _emit_stage_b() -> None:
+        """Stage B: thumb stabilizes side, middle supports, index does final closure."""
+        for role in ("thumb", "index", "middle"):
+            key = f"{side}_{role}"
+            if safety_stop or float(penetration_m) > float(DEX3_CLEAN_PENETRATION_CAP_M) or pen_rising:
+                out[key] = "open"
+                continue
+            d = float(digit_distances.get(role, float("inf")))
+            dc = int(digit_contacts.get(role, 0))
+            if role == "thumb":
+                if dc > 0 or d <= 0.022:
+                    out[key] = "hold"
+                elif close_allowed:
+                    out[key] = "close"
+                else:
+                    out[key] = "hold"
+            elif role == "middle":
+                if dc > 0 and wrist_orientation_locked:
+                    out[key] = "hold"
+                elif close_allowed:
+                    out[key] = "close"
+                else:
+                    out[key] = "hold" if active_phase else "open"
+            else:  # index — allow refinement even under mild penetration slack
+                if close_allowed or (active_phase and d < 0.09):
+                    out[key] = "close"
+                elif dc > 0:
+                    out[key] = "hold"
+                else:
+                    out[key] = "hold" if active_phase else "open"
+
+    if not active_phase:
+        for role in ("thumb", "index", "middle"):
+            out[f"{side}_{role}"] = "open"
+        return out
+
+    if finger_place_only and active_phase:
+        _emit_finger_place()
+        return out
+
+    if palm_has_contact:
+        _emit_stage_b()
+        return out
+
+    if close_allowed or active_phase:
+        _emit_open_hold_close_spread()
+        return out
+
+    for role in ("thumb", "index", "middle"):
+        out[f"{side}_{role}"] = "open"
+    return out
 
 
 def _proxy_geom_ids(model: mujoco.MjModel, names: tuple[str, ...]) -> set[int]:
@@ -1503,6 +1898,8 @@ def run_g1_dual_arm_box(
     max_joint_from_neutral: float = IK_MAX_ABS_JOINT_FROM_NEUTRAL + 0.40,
     dbg_markers: bool = False,
     dbg_penetration: bool = False,
+    finger_place_only: bool = True,
+    no_assist: bool = False,
 ) -> dict[str, Any]:
     if not REACH_BOX_DUAL_MILESTONE_SCENE_PATH.is_file():
         raise FileNotFoundError(f"Missing scene: {REACH_BOX_DUAL_MILESTONE_SCENE_PATH}")
@@ -1516,6 +1913,10 @@ def run_g1_dual_arm_box(
     max_steps_limit = max_steps
 
     model = _load_dual_scene_model()
+    motion = _sim_motion_profile(fast=bool(fast))
+    global _ACTIVE_TIMELINE_SPEED
+    _ACTIVE_TIMELINE_SPEED = float(motion.timeline_speed)
+    applied_dt = _apply_physics_timestep(model, motion.physics_timestep_s)
     use_dex3_hands = int(model.nu) == int(G1_DUAL_ARM_NU_DEX3)
     if not use_dex3_hands and int(model.nu) != 31:
         raise RuntimeError(f"Expected nu=31 (29 hinge + 2 right proxy sliders), got {model.nu}")
@@ -1535,11 +1936,17 @@ def run_g1_dual_arm_box(
 
     finger_joints = _has_actuated_finger_joints(model)
     assist_finger_actuators_unsupported = bool(finger_joints and not use_dex3_hands)
-    finger_controller: Dex3FingerController | None = (
-        Dex3FingerController() if use_dex3_hands else None
+    finger_controller: Dex3FingerController | None = None
+    if use_dex3_hands:
+        finger_controller = Dex3FingerController(
+            lp_alpha=float(motion.finger_lp_alpha),
+            max_delta_rad=float(motion.finger_max_delta_rad),
+        )
+    pen_episode_cap_m = (
+        float(DEX3_CLEAN_PENETRATION_CAP_M)
+        if use_dex3_hands
+        else float(MAX_DUAL_BOX_PENETRATION_ANY_GEOM_M)
     )
-    # Dex3 high-poly finger meshes can exceed the legacy proxy AABB peak at the same IK margin.
-    pen_episode_cap_m = 0.020 if use_dex3_hands else float(MAX_DUAL_BOX_PENETRATION_ANY_GEOM_M)
     _apply_kp_scale_for_joint_subset(model, set(DUAL_IK_JOINT_NAMES), DUAL_IK_KP_SCALE)
     _apply_kp_scale_for_joint_subset(
         model,
@@ -1687,6 +2094,8 @@ def run_g1_dual_arm_box(
         print(
             "\nNOTE: Dual-arm coordinated assist uses **bounded** ``xfrc_applied`` on the box.\n"
             f"Pipeline: {_pipe}.\n"
+            f"sim_timestep={applied_dt:.4f}s  timeline_speed={motion.timeline_speed:.2f}  "
+            f"fast_profile={bool(fast)}\n"
             f"right_touch_detection={detect_mode_r!r}  slide_joint="
             f"{BOX_SLIDE_JOINT_NAME if slide_jid >= 0 else 'MISSING'}\n"
             f"touches: right_geoms={_geom_names(model, touch_r)}  left_geoms={_geom_names(model, touch_l)}\n",
@@ -1811,6 +2220,34 @@ def run_g1_dual_arm_box(
     current_dex3_finger_mode_for_step = "open_hand"
     last_dex3_finger_apply: dict[str, float] = {}
     finger_closure_blocked_reason: str | None = None
+    dex3_digit_policy_for_step: dict[str, str] = {}
+    dex3_index_max_delta_rad_for_step: float | None = None
+    dex3_digits_on_box_count = 0
+    max_dex3_digits_on_box_count = 0
+
+    wrist_orientation_locked = False
+    wrist_orientation_ever_locked = False
+    wrist_lock_snap_time: float | None = None
+    wrist_frozen_ori_r: dict[str, Any] | None = None
+    wrist_frozen_ori_l: dict[str, Any] | None = None
+    wrist_lock_axis_r: np.ndarray | None = None
+    wrist_lock_axis_l: np.ndarray | None = None
+    palm_first_settle_s = 0.0
+    wrist_orientation_lock_duration_s = 0.0
+    wrist_lock_max_axis_err_r_episode = 0.0
+    wrist_lock_max_axis_err_l_episode = 0.0
+    wrist_vertical_only_r = False
+    wrist_vertical_only_l = False
+    wrist_roll_yaw_latch_r: dict[str, float] = {}
+    wrist_roll_yaw_latch_l: dict[str, float] = {}
+    palm_contact_stable_s_diag = 0.0
+    finger_contact_stable_s_diag = 0.0
+    max_palm_contact_stable_s_diag_episode = 0.0
+    max_finger_contact_stable_s_diag_episode = 0.0
+    min_right_index_tip_dist_episode = float("inf")
+    min_left_index_tip_dist_episode = float("inf")
+    min_right_thumb_tip_dist_episode = float("inf")
+    min_left_thumb_tip_dist_episode = float("inf")
 
     # Warm-start toward neutral then first dual solve pulls both arms inward.
     for adr in ik_dof_adrs:
@@ -1823,14 +2260,27 @@ def run_g1_dual_arm_box(
             full[jn] = float(qv)
         if finger_controller is not None:
             freeze = bool(
-                finger_closure_blocked_reason is not None
-                and phase in (DualPhase.CLOSE_PROXY_HANDS, DualPhase.DUAL_GRASP_HOLD)
-                and last_dex3_finger_apply
-            )
+                (
+                    finger_closure_blocked_reason is not None
+                    and phase in (DualPhase.CLOSE_PROXY_HANDS, DualPhase.DUAL_GRASP_HOLD)
+                )
+                or (
+                    finger_place_only
+                    and max_dex3_digits_on_box_count >= 6
+                    and phase in (DualPhase.DUAL_GRASP_HOLD, DualPhase.CLOSE_PROXY_HANDS)
+                )
+            ) and bool(last_dex3_finger_apply)
             if freeze:
                 full.update(last_dex3_finger_apply)
             else:
-                last_dex3_finger_apply = finger_controller.step(current_dex3_finger_mode_for_step)
+                if dex3_digit_policy_for_step:
+                    last_dex3_finger_apply = finger_controller.step_contact_aware(
+                        current_dex3_finger_mode_for_step,
+                        digit_policy=dex3_digit_policy_for_step,
+                        index_max_delta_rad=dex3_index_max_delta_rad_for_step,
+                    )
+                else:
+                    last_dex3_finger_apply = finger_controller.step(current_dex3_finger_mode_for_step)
                 full.update(last_dex3_finger_apply)
         return full
 
@@ -1882,6 +2332,19 @@ def run_g1_dual_arm_box(
         nonlocal max_dex3_right_fingertip_contacts_episode, max_dex3_left_fingertip_contacts_episode
         nonlocal prev_box_com_z, prev_bilateral_stable_s
         nonlocal current_dex3_finger_mode_for_step, last_dex3_finger_apply, finger_closure_blocked_reason
+        nonlocal dex3_digit_policy_for_step
+        nonlocal dex3_index_max_delta_rad_for_step
+        nonlocal dex3_digits_on_box_count, max_dex3_digits_on_box_count
+        nonlocal wrist_orientation_locked, wrist_orientation_ever_locked, wrist_lock_snap_time
+        nonlocal wrist_frozen_ori_r, wrist_frozen_ori_l, wrist_lock_axis_r, wrist_lock_axis_l
+        nonlocal wrist_vertical_only_r, wrist_vertical_only_l
+        nonlocal wrist_roll_yaw_latch_r, wrist_roll_yaw_latch_l
+        nonlocal palm_first_settle_s, wrist_orientation_lock_duration_s
+        nonlocal wrist_lock_max_axis_err_r_episode, wrist_lock_max_axis_err_l_episode
+        nonlocal palm_contact_stable_s_diag, finger_contact_stable_s_diag
+        nonlocal max_palm_contact_stable_s_diag_episode, max_finger_contact_stable_s_diag_episode
+        nonlocal min_right_index_tip_dist_episode, min_left_index_tip_dist_episode
+        nonlocal min_right_thumb_tip_dist_episode, min_left_thumb_tip_dist_episode
 
         dt_sim = float(model.opt.timestep)
         tout = float(timeout)
@@ -1892,6 +2355,7 @@ def run_g1_dual_arm_box(
             tout,
             squeeze_gate_cleared_t,
             post_gate_virtual_lag_s=post_gate_freeze_accum,
+            finger_place_only=finger_place_only,
         )
         final_phase = phase
 
@@ -1905,7 +2369,9 @@ def run_g1_dual_arm_box(
         )
 
         post_spans = (
-            _post_gate_abs_spans(squeeze_gate_cleared_t, tout)
+            _post_gate_abs_spans(
+                squeeze_gate_cleared_t, tout, finger_place_only=finger_place_only
+            )
             if squeeze_gate_cleared_t is not None
             else None
         )
@@ -1923,12 +2389,136 @@ def run_g1_dual_arm_box(
         dr_pre = float(np.linalg.norm(palm_rp - tgt_r_pre))
         dl_pre = float(np.linalg.norm(palm_lp_pre - lt_touch))
         rc_pre = _contact_count_set(data, box_gid, touch_r)
+        lc_pre = _contact_count_set(data, box_gid, touch_l)
 
         engage_left = (
             (phase not in PRE_RIGHT_ONLY_PHASES)
             or (dr_pre < _RIGHT_ENGAGE_LEFT_ARM_M)
             or (rc_pre > 0)
         )
+
+        dex3_index_max_delta_rad_for_step = None
+        wrist_ik_inner_scale = 1.0
+        if phase not in FINGER_REACH_WRIST_PHASES:
+            wrist_vertical_only_r = False
+            wrist_vertical_only_l = False
+            wrist_roll_yaw_latch_r = {}
+            wrist_roll_yaw_latch_l = {}
+        elif use_dex3_hands:
+            if not wrist_vertical_only_r:
+                wrist_roll_yaw_latch_r = _latch_wrist_roll_yaw(
+                    data, joint_qpos_adr, RIGHT_WRIST_ROLL_YAW_JOINTS
+                )
+                wrist_vertical_only_r = True
+            if not wrist_vertical_only_l:
+                wrist_roll_yaw_latch_l = _latch_wrist_roll_yaw(
+                    data, joint_qpos_adr, LEFT_WRIST_ROLL_YAW_JOINTS
+                )
+                wrist_vertical_only_l = True
+            wrist_orientation_locked = False
+            wrist_frozen_ori_r = None
+            wrist_frozen_ori_l = None
+            wrist_ik_inner_scale = 1.0
+        if phase not in WRIST_ORIENTATION_LOCK_PHASES or (not use_dex3_hands):
+            if not wrist_orientation_locked:
+                palm_first_settle_s = 0.0
+            if phase in (DualPhase.RETREAT, DualPhase.DONE, DualPhase.STOW):
+                wrist_orientation_locked = False
+                wrist_frozen_ori_r = None
+                wrist_frozen_ori_l = None
+                wrist_lock_axis_r = None
+                wrist_lock_axis_l = None
+        elif wrist_orientation_locked:
+            wrist_ik_inner_scale = float(WRIST_LOCK_INNER_ITERS_SCALE)
+            if WRIST_LOCK_DURATION_TRACK:
+                wrist_orientation_lock_duration_s += dt_sim
+        elif use_dex3_hands and not (wrist_vertical_only_r or wrist_vertical_only_l):
+            dg = det_goal
+            bxmi = float(dg["box_x_min"])
+            bxma = float(dg["box_x_max"])
+            bymi = float(dg["box_y_min"])
+            byma = float(dg["box_y_max"])
+            bzz = float(dg["bottom_z"])
+            tzz = float(dg["top_z"])
+            inside_rp_pre = _is_palm_inside_box_volume(
+                palm_rp, bxmi, bxma, bymi, byma, bzz, tzz
+            )
+            inside_lp_pre = _is_palm_inside_box_volume(
+                palm_lp_pre, bxmi, bxma, bymi, byma, bzz, tzz
+            )
+            palm_out_pre = not (inside_rp_pre or inside_lp_pre)
+            near_x_e = float(dg["near_face_x"])
+            ry_face_y = float(dg["left_edge_y"])
+            ly_face_y = float(dg["right_edge_y"])
+            cy_clear_e = float(DUAL_SURFACE_CONTACT_CLEARANCE_Y_M)
+            palm_x_tol_e = near_x_e + 0.068
+            right_strip_min_e = (
+                ry_face_y
+                - PALM_PLATE_HALF_WIDTH_Y
+                - cy_clear_e
+                - EDGE_CONTACT_Y_PAD_OUTBOARD_M
+            )
+            right_strip_max_e = ry_face_y + EDGE_CONTACT_Y_PAD_INBOARD_M
+            left_strip_min_e = ly_face_y - EDGE_CONTACT_Y_PAD_INBOARD_M
+            left_strip_max_e = (
+                ly_face_y
+                + PALM_PLATE_HALF_WIDTH_Y
+                + cy_clear_e
+                + EDGE_CONTACT_Y_PAD_OUTBOARD_M
+            )
+            strip_ok_pre = (
+                right_strip_min_e <= float(palm_rp[1]) <= right_strip_max_e
+                and left_strip_min_e <= float(palm_lp_pre[1]) <= left_strip_max_e
+                and float(palm_rp[0]) <= palm_x_tol_e
+                and float(palm_lp_pre[0]) <= palm_x_tol_e
+            )
+            r_align_pre = _palm_normal_alignment_score(
+                data, right_site_id, RIGHT_PALM_AXIS_TARGET
+            )
+            l_align_pre = _palm_normal_alignment_score(
+                data, left_site_id, LEFT_PALM_AXIS_TARGET
+            )
+            rpu_pre = float(_palm_up_alignment_score(data, right_site_id))
+            lpu_pre = float(_palm_up_alignment_score(data, left_site_id))
+            tgt_r_e = np.asarray(dg["right_dual_pregrasp_target"], dtype=float)
+            tgt_l_e = np.asarray(dg["left_dual_pregrasp_target"], dtype=float)
+            dr_pg = float(np.linalg.norm(palm_rp - tgt_r_e))
+            dl_pg = float(np.linalg.norm(palm_lp_pre - tgt_l_e))
+            palm_pose_tight = (
+                dr_pg < float(RIGHT_PALM_CONTACT_GOAL_M) * 1.08
+                and dl_pg < float(LEFT_PALM_CONTACT_GOAL_M) * 1.08
+            )
+            pen_pre_frame = float(max(prev_pen_rp_frame, prev_pen_lp_frame, 0.0))
+            pen_ok_pre = pen_pre_frame <= float(pen_episode_cap_m) * 1.02
+            palm_pre_ok = (
+                palm_out_pre
+                and palm_pose_tight
+                and strip_ok_pre
+                and r_align_pre >= float(DEX3_PALM_NORMAL_CLOSE_OK)
+                and l_align_pre >= float(DEX3_PALM_NORMAL_CLOSE_OK)
+                and rpu_pre >= float(DEX3_PALM_UP_OK)
+                and lpu_pre >= float(DEX3_PALM_UP_OK)
+                and pen_ok_pre
+            )
+            if palm_pre_ok:
+                palm_first_settle_s += dt_sim
+            else:
+                palm_first_settle_s = max(0.0, palm_first_settle_s - 0.72 * dt_sim)
+            if palm_first_settle_s + 1e-9 >= float(WRIST_LOCK_PALM_SETTLE_S):
+                wrist_lock_axis_r = _locked_site_axis_snapshot(
+                    data, right_site_id, RIGHT_PALM_AXIS_TARGET
+                )
+                wrist_lock_axis_l = _locked_site_axis_snapshot(
+                    data, left_site_id, LEFT_PALM_AXIS_TARGET
+                )
+                up_r_snap = _locked_up_from_axis(wrist_lock_axis_r)
+                up_l_snap = _locked_up_from_axis(wrist_lock_axis_l)
+                wrist_frozen_ori_r = _wrist_lock_palm_ori_kw(wrist_lock_axis_r, up_r_snap)
+                wrist_frozen_ori_l = _wrist_lock_palm_ori_kw(wrist_lock_axis_l, up_l_snap)
+                wrist_orientation_locked = True
+                wrist_orientation_ever_locked = True
+                wrist_lock_snap_time = float(sim_tm)
+                wrist_ik_inner_scale = float(WRIST_LOCK_INNER_ITERS_SCALE)
 
         if waist_frozen_xy is None and phase not in (DualPhase.STOW, DualPhase.DONE):
             arm_pose_ready_for_waist_freeze = (
@@ -2038,7 +2628,7 @@ def run_g1_dual_arm_box(
 
         pr_goal_raw = np.asarray(pr_goal, dtype=float).copy()
         if phase in (DualPhase.DUAL_APPROACH, DualPhase.DUAL_DESCEND_TO_PREGRASP):
-            a_pf = float(PR_GOAL_FILTER_ALPHA)
+            a_pf = float(motion.pr_goal_filter_alpha)
             if pr_goal_filt_ref[0] is None:
                 pr_goal_filt_ref[0] = pr_goal_raw.copy()
             else:
@@ -2073,8 +2663,10 @@ def run_g1_dual_arm_box(
             else:
                 sequential_left_arm_frames = 0
         else:
-            sequential_left_arm_frames = SEQUENTIAL_IK_RIGHT_POSE_HOLD_FRAMES
-        sequential_left_ik_ok = sequential_left_arm_frames >= SEQUENTIAL_IK_RIGHT_POSE_HOLD_FRAMES
+            sequential_left_arm_frames = int(motion.sequential_right_hold_frames)
+        sequential_left_ik_ok = (
+            sequential_left_arm_frames >= int(motion.sequential_right_hold_frames)
+        )
         engage_left_ik = bool(
             engage_left
             and (
@@ -2149,6 +2741,14 @@ def run_g1_dual_arm_box(
                 palm_ori_box_center=np.asarray(det_goal["box_center"], dtype=float).reshape(3),
                 palm_right_pre_ik_xyz=palm_rp,
                 palm_left_pre_ik_xyz=palm_lp_pre,
+                wrist_orientation_lock=bool(
+                    wrist_orientation_locked
+                    and use_dex3_hands
+                    and not (wrist_vertical_only_r or wrist_vertical_only_l)
+                ),
+                wrist_frozen_kw_r=wrist_frozen_ori_r,
+                wrist_frozen_kw_l=wrist_frozen_ori_l,
+                ik_inner_iters_scale=float(wrist_ik_inner_scale * motion.ik_iter_scale),
                 right_reject_streak=right_reject_streak,
                 left_reject_streak=left_reject_streak,
                 right_recovery_events=right_recovery_events,
@@ -2171,9 +2771,9 @@ def run_g1_dual_arm_box(
                 cmd_dual_prev[i] = float(data.qpos[adr])
                 continue
             mx = (
-                MAX_WAIST_JOINT_STEP_RAD
+                float(motion.max_waist_joint_step_rad)
                 if jn in WAIST_IK_JOINT_NAMES
-                else MAX_ARM_JOINT_STEP_RAD
+                else float(motion.max_arm_joint_step_rad)
             )
             raw = float(data.qpos[adr])
             dq = float(np.clip(raw - prev_cmd[i], -mx, mx))
@@ -2202,18 +2802,28 @@ def run_g1_dual_arm_box(
         frame_right_joint_max_delta = 0.0
         right_wrist_rate_limited = False
         left_wrist_rate_limited = False
+        wrist_cmd_tight = bool(
+            use_dex3_hands
+            and wrist_orientation_locked
+            and phase in WRIST_ORIENTATION_LOCK_PHASES
+            and not (wrist_vertical_only_r or wrist_vertical_only_l)
+        )
         if coord_mode != CoordinationMode.IDLE:
             for jn in RIGHT_ARM_CMD_SMOOTH_JOINTS:
                 adr = int(joint_qpos_adr[jn])
                 wi = DUAL_IK_JOINT_NAMES.index(jn)
                 raw_w = float(data.qpos[adr])
                 prev_sm = float(right_arm_cmd_prev[jn])
-                blended_u = RIGHT_ARM_CMD_LP_ALPHA * raw_w + (
-                    1.0 - RIGHT_ARM_CMD_LP_ALPHA
+                blended_u = float(motion.right_cmd_lp_alpha) * raw_w + (
+                    1.0 - float(motion.right_cmd_lp_alpha)
                 ) * prev_sm
                 d_sm = blended_u - prev_sm
-                lim_r = float(RIGHT_ARM_CMD_MAX_DELTA_RAD)
-                if abs(d_sm) > lim_r:
+                lim_r = float(motion.right_cmd_max_delta_rad)
+                if wrist_cmd_tight and jn in RIGHT_WRIST_JOINT_NAMES_DUAL:
+                    lim_r = min(lim_r, float(WRIST_LOCK_MAX_WRIST_CMD_DELTA_RAD))
+                if wrist_vertical_only_r and jn in RIGHT_WRIST_ROLL_YAW_JOINTS:
+                    sm = float(wrist_roll_yaw_latch_r.get(jn, prev_sm))
+                elif abs(d_sm) > lim_r:
                     sm = prev_sm + float(np.sign(d_sm)) * lim_r
                     if jn in RIGHT_WRIST_JOINT_NAMES_DUAL:
                         right_wrist_rate_limited = True
@@ -2234,12 +2844,16 @@ def run_g1_dual_arm_box(
                 wi = DUAL_IK_JOINT_NAMES.index(jn)
                 raw_w = float(data.qpos[adr])
                 prev_sm = float(left_arm_cmd_prev[jn])
-                blended_u = LEFT_ARM_CMD_LP_ALPHA * raw_w + (
-                    1.0 - LEFT_ARM_CMD_LP_ALPHA
+                blended_u = float(motion.left_cmd_lp_alpha) * raw_w + (
+                    1.0 - float(motion.left_cmd_lp_alpha)
                 ) * prev_sm
                 d_sm = blended_u - prev_sm
-                lim_l = float(LEFT_ARM_CMD_MAX_DELTA_RAD)
-                if abs(d_sm) > lim_l:
+                lim_l = float(motion.left_cmd_max_delta_rad)
+                if wrist_cmd_tight and jn in LEFT_WRIST_JOINT_NAMES_DUAL:
+                    lim_l = min(lim_l, float(WRIST_LOCK_MAX_WRIST_CMD_DELTA_RAD))
+                if wrist_vertical_only_l and jn in LEFT_WRIST_ROLL_YAW_JOINTS:
+                    sm = float(wrist_roll_yaw_latch_l.get(jn, prev_sm))
+                elif abs(d_sm) > lim_l:
                     sm = prev_sm + float(np.sign(d_sm)) * lim_l
                     if jn in LEFT_WRIST_JOINT_NAMES_DUAL:
                         left_wrist_rate_limited = True
@@ -2346,6 +2960,8 @@ def run_g1_dual_arm_box(
         dex3_dual_relaxed_ready = False
         dex3_r_digit_dist = {"thumb": float("inf"), "index": float("inf"), "middle": float("inf")}
         dex3_l_digit_dist = {"thumb": float("inf"), "index": float("inf"), "middle": float("inf")}
+        dex3_r_digit_contacts = {"thumb": 0, "index": 0, "middle": 0}
+        dex3_l_digit_contacts = {"thumb": 0, "index": 0, "middle": 0}
         if use_dex3_hands:
             dex3_rsum = hand_box_contact_summary(
                 model, data, box_gid=box_gid, side="right", palm_geom_id=palm_r_gid
@@ -2355,6 +2971,38 @@ def run_g1_dual_arm_box(
             )
             dex3_r_digit_dist = dex3_digit_box_distances(model, data, box_gid=box_gid, side="right")
             dex3_l_digit_dist = dex3_digit_box_distances(model, data, box_gid=box_gid, side="left")
+            dex3_r_digit_contacts = digit_contact_counts_by_role(
+                model, data, box_gid=box_gid, side="right"
+            )
+            dex3_l_digit_contacts = digit_contact_counts_by_role(
+                model, data, box_gid=box_gid, side="left"
+            )
+            if int(dex3_rsum["palm_contacts"]) >= 1 and int(dex3_lsum["palm_contacts"]) >= 1:
+                palm_contact_stable_s_diag += dt_sim
+            else:
+                palm_contact_stable_s_diag = max(0.0, palm_contact_stable_s_diag - 1.15 * dt_sim)
+            if int(dex3_rsum["fingertip_contacts"]) >= 1 and int(dex3_lsum["fingertip_contacts"]) >= 1:
+                finger_contact_stable_s_diag += dt_sim
+            else:
+                finger_contact_stable_s_diag = max(0.0, finger_contact_stable_s_diag - 0.95 * dt_sim)
+            max_palm_contact_stable_s_diag_episode = max(
+                max_palm_contact_stable_s_diag_episode, palm_contact_stable_s_diag
+            )
+            max_finger_contact_stable_s_diag_episode = max(
+                max_finger_contact_stable_s_diag_episode, finger_contact_stable_s_diag
+            )
+            min_right_index_tip_dist_episode = min(
+                min_right_index_tip_dist_episode, float(dex3_r_digit_dist["index"])
+            )
+            min_left_index_tip_dist_episode = min(
+                min_left_index_tip_dist_episode, float(dex3_l_digit_dist["index"])
+            )
+            min_right_thumb_tip_dist_episode = min(
+                min_right_thumb_tip_dist_episode, float(dex3_r_digit_dist["thumb"])
+            )
+            min_left_thumb_tip_dist_episode = min(
+                min_left_thumb_tip_dist_episode, float(dex3_l_digit_dist["thumb"])
+            )
 
         xmin = float(det_met["box_x_min"])
         xmax = float(det_met["box_x_max"])
@@ -2425,6 +3073,8 @@ def run_g1_dual_arm_box(
         pen_rpx = max((_pen_gid(g) for g in prx_ids), default=0.0)
         pen_lpx = max((_pen_gid(g) for g in plx_ids), default=0.0)
 
+        prior_pen_rp_frame = float(prev_pen_rp_frame)
+        prior_pen_lp_frame = float(prev_pen_lp_frame)
         prev_pen_rp_frame = float(max(pen_rp, pen_rpx))
         prev_pen_lp_frame = float(max(pen_lp, pen_lpx))
         prev_pen_rp_palm = float(pen_rp)
@@ -2527,9 +3177,30 @@ def run_g1_dual_arm_box(
         )
 
         axis_r_w = _site_axis_world(data, right_site_id, axis_col=0)
-        axis_l_w = _site_axis_world(data, left_site_id, axis_col=0)
-        right_normal_alignment = _normal_alignment_score(axis_r_w, RIGHT_PALM_AXIS_TARGET)
-        left_normal_alignment = _normal_alignment_score(axis_l_w, LEFT_PALM_AXIS_TARGET)
+        right_normal_alignment = _palm_normal_alignment_score(
+            data, right_site_id, RIGHT_PALM_AXIS_TARGET
+        )
+        left_normal_alignment = _palm_normal_alignment_score(
+            data, left_site_id, LEFT_PALM_AXIS_TARGET
+        )
+
+        rw_orient_err = 0.0
+        lw_orient_err = 0.0
+        if wrist_orientation_locked and wrist_lock_axis_r is not None:
+            rw_orient_err = float(
+                _palm_axis_tracking_error(data, right_site_id, wrist_lock_axis_r)
+            )
+        if wrist_orientation_locked and wrist_lock_axis_l is not None:
+            lw_orient_err = float(
+                _palm_axis_tracking_error(data, left_site_id, wrist_lock_axis_l)
+            )
+        if wrist_orientation_locked:
+            wrist_lock_max_axis_err_r_episode = max(
+                wrist_lock_max_axis_err_r_episode, rw_orient_err
+            )
+            wrist_lock_max_axis_err_l_episode = max(
+                wrist_lock_max_axis_err_l_episode, lw_orient_err
+            )
 
         right_touch_quality_gate = rc >= 1 or geom_touch_r
         left_touch_quality_gate = lc >= 1 or geom_touch_l
@@ -2542,6 +3213,14 @@ def run_g1_dual_arm_box(
         valid_left_contact = bool(
             left_touch_quality_gate
             and left_strip_min <= float(palm_l[1]) <= left_strip_max
+            and float(palm_l[0]) <= palm_x_tol
+        )
+        right_side_geometry_ok = bool(
+            right_strip_min <= float(palm_r[1]) <= right_strip_max
+            and float(palm_r[0]) <= palm_x_tol
+        )
+        left_side_geometry_ok = bool(
+            left_strip_min <= float(palm_l[1]) <= left_strip_max
             and float(palm_l[0]) <= palm_x_tol
         )
 
@@ -2570,13 +3249,19 @@ def run_g1_dual_arm_box(
         left_palm_up_alignment = float(_palm_up_alignment_score(data, left_site_id))
         wp_r = float(data.qpos[int(hinge_addrs["right_wrist_pitch_joint"]["qpos_adr"])])
         wp_l = float(data.qpos[int(hinge_addrs["left_wrist_pitch_joint"]["qpos_adr"])])
-        wrist_pitch_down_warning = bool(wp_r < -0.48 or wp_l < -0.48)
+        wrist_pitch_down_warning = bool(
+            wp_r < -0.48
+            or wp_l < -0.48
+            or right_palm_up_alignment < DEX3_PALM_UP_OK
+            or left_palm_up_alignment < DEX3_PALM_UP_OK
+        )
 
         strict_dual_pose = dr < RIGHT_PALM_CONTACT_GOAL_M and dl_tgt < LEFT_PALM_CONTACT_GOAL_M
 
         palm_outside_vol = bool((not inside_rp) and (not inside_lp))
         pen_ok = bool(max_pen_any_frame <= pen_episode_cap_m)
-        pen_ok_acc = bool(max_pen_any_frame <= pen_episode_cap_m + 0.0075)
+        pen_slack = 0.0025 if use_dex3_hands else 0.0075
+        pen_ok_acc = bool(max_pen_any_frame <= pen_episode_cap_m + pen_slack)
 
         surface_ok_r = bool(
             (rc >= 1 or geom_touch_r)
@@ -2694,16 +3379,23 @@ def run_g1_dual_arm_box(
             and phase in (DualPhase.CLOSE_PROXY_HANDS, DualPhase.DUAL_GRASP_HOLD)
         ):
             if (
+                phase == DualPhase.CLOSE_PROXY_HANDS
+                and not wrist_orientation_locked
+                and not (wrist_vertical_only_r and wrist_vertical_only_l)
+            ):
+                closure_block_this = "await_wrist_orientation_lock"
+            elif (
                 right_normal_alignment + 1e-9 < float(DEX3_PALM_NORMAL_CLOSE_OK)
                 or left_normal_alignment + 1e-9 < float(DEX3_PALM_NORMAL_CLOSE_OK)
             ):
                 closure_block_this = "palm_not_aligned"
             elif (
-                int(dex3_rsum["fingertip_contacts"]) < 1
-                and int(dex3_lsum["fingertip_contacts"]) < 1
-                and min(min_rd, min_ld) > float(DEX3_FINGERTIP_NEAR_BOX_M) * 1.15
+                right_palm_up_alignment + 1e-9 < float(DEX3_PALM_UP_OK)
+                or left_palm_up_alignment + 1e-9 < float(DEX3_PALM_UP_OK)
             ):
-                closure_block_this = "no_finger_near_box"
+                closure_block_this = "palm_pitch_down"
+            elif max_pen_any_frame > float(DEX3_CLEAN_PENETRATION_CAP_M):
+                closure_block_this = "penetration_high"
             elif float(box_c_pre[2]) + 1e-4 < float(prev_box_com_z):
                 closure_block_this = "box_being_pushed"
             elif float(bilateral_stable_s) + 1e-6 < float(prev_bilateral_stable_s) - 0.038:
@@ -2718,6 +3410,8 @@ def run_g1_dual_arm_box(
         dex3_align_ok = bool(
             right_normal_alignment + 1e-9 >= float(DEX3_PALM_NORMAL_OK)
             and left_normal_alignment + 1e-9 >= float(DEX3_PALM_NORMAL_OK)
+            and right_palm_up_alignment + 1e-9 >= float(DEX3_PALM_UP_OK)
+            and left_palm_up_alignment + 1e-9 >= float(DEX3_PALM_UP_OK)
         )
         dex3_sticky_gate = bool(
             use_dex3_hands
@@ -2746,10 +3440,94 @@ def run_g1_dual_arm_box(
                 safety_stop=dex3_finger_safety_stop,
                 closure_block=closure_block_this,
                 palms_aligned_for_close=palms_aligned_for_close,
+                finger_place_only=finger_place_only,
             )
+            dex3_digit_policy_for_step = {}
+            palm_has_r = bool(dex3_rsum is not None and int(dex3_rsum["palm_contacts"]) >= 1)
+            palm_has_l = bool(dex3_lsum is not None and int(dex3_lsum["palm_contacts"]) >= 1)
+            if phase in (
+                DualPhase.DUAL_CONTACT_HOLD,
+                DualPhase.CLOSE_PROXY_HANDS,
+                DualPhase.DUAL_GRASP_HOLD,
+                DualPhase.DUAL_LIFT_TEST,
+                DualPhase.DUAL_LOWER_BACK,
+            ):
+                dex3_digit_policy_for_step.update(
+                    _dex3_digit_policy(
+                        phase=phase,
+                        side="right",
+                        side_geometry_ok=right_side_geometry_ok,
+                        palm_aligned=right_normal_alignment >= DEX3_PALM_NORMAL_CLOSE_OK,
+                        palm_up_ok=right_palm_up_alignment >= DEX3_PALM_UP_OK,
+                        palm_outside=palm_outside_vol,
+                        palm_has_contact=palm_has_r,
+                        wrist_orientation_locked=wrist_orientation_locked,
+                        penetration_m=float(prev_pen_rp_frame),
+                        penetration_prev_m=float(prior_pen_rp_frame),
+                        digit_distances=dex3_r_digit_dist,
+                        digit_contacts=dex3_r_digit_contacts,
+                        safety_stop=dex3_finger_safety_stop,
+                        finger_place_only=finger_place_only,
+                    )
+                )
+                dex3_digit_policy_for_step.update(
+                    _dex3_digit_policy(
+                        phase=phase,
+                        side="left",
+                        side_geometry_ok=left_side_geometry_ok,
+                        palm_aligned=left_normal_alignment >= DEX3_PALM_NORMAL_CLOSE_OK,
+                        palm_up_ok=left_palm_up_alignment >= DEX3_PALM_UP_OK,
+                        palm_outside=palm_outside_vol,
+                        palm_has_contact=palm_has_l,
+                        wrist_orientation_locked=wrist_orientation_locked,
+                        penetration_m=float(prev_pen_lp_frame),
+                        penetration_prev_m=float(prior_pen_lp_frame),
+                        digit_distances=dex3_l_digit_dist,
+                        digit_contacts=dex3_l_digit_contacts,
+                        safety_stop=dex3_finger_safety_stop,
+                        finger_place_only=finger_place_only,
+                    )
+                )
+            if finger_place_only and dex3_digit_policy_for_step and finger_controller is not None:
+                dex3_index_max_delta_rad_for_step = float(motion.digit_approach_max_delta_rad)
+                dex3_digits_on_box_count = 0
+                for side, dcont, ddist in (
+                    ("right", dex3_r_digit_contacts, dex3_r_digit_dist),
+                    ("left", dex3_l_digit_contacts, dex3_l_digit_dist),
+                ):
+                    for role in ("thumb", "index", "middle"):
+                        key = f"{side}_{role}"
+                        touching = int(dcont.get(role, 0)) > 0 or float(
+                            ddist.get(role, float("inf"))
+                        ) <= float(DEX3_DIGIT_CONTACT_FREEZE_DIST_M)
+                        if touching:
+                            dex3_digits_on_box_count += 1
+                        if dex3_digit_policy_for_step.get(key) == "hold" and touching:
+                            finger_controller.freeze_digit_joints(
+                                dex3_digit_joint_names(side, role)
+                            )
+                max_dex3_digits_on_box_count = max(
+                    max_dex3_digits_on_box_count, dex3_digits_on_box_count
+                )
+            elif (
+                wrist_orientation_locked
+                and dex3_rsum is not None
+                and dex3_lsum is not None
+                and palm_has_r
+                and palm_has_l
+                and phase
+                in (
+                    DualPhase.CLOSE_PROXY_HANDS,
+                    DualPhase.DUAL_GRASP_HOLD,
+                    DualPhase.DUAL_LIFT_TEST,
+                    DualPhase.DUAL_LOWER_BACK,
+                )
+            ):
+                dex3_index_max_delta_rad_for_step = 0.036
         else:
             finger_closure_blocked_reason = None
             current_dex3_finger_mode_for_step = "open_hand"
+            dex3_digit_policy_for_step = {}
 
         prev_bilateral_stable_s = float(bilateral_stable_s)
         prev_box_com_z = float(box_c_pre[2])
@@ -2760,6 +3538,11 @@ def run_g1_dual_arm_box(
         episode_diag["dex3_real_contact_stable_s"] = float(dex3_real_contact_stable_s)
         episode_diag["dex3_contact_stable_decay_events"] = int(dex3_contact_stable_decay_events)
         episode_diag["finger_closure_blocked_reason"] = finger_closure_blocked_reason
+        episode_diag["dex3_digit_policy"] = dict(dex3_digit_policy_for_step)
+        episode_diag["right_palm_normal_alignment"] = float(right_normal_alignment)
+        episode_diag["left_palm_normal_alignment"] = float(left_normal_alignment)
+        episode_diag["right_normal_alignment"] = float(right_normal_alignment)
+        episode_diag["left_normal_alignment"] = float(left_normal_alignment)
         episode_diag["right_palm_up_alignment"] = float(right_palm_up_alignment)
         episode_diag["left_palm_up_alignment"] = float(left_palm_up_alignment)
         episode_diag["wrist_pitch_down_warning"] = bool(wrist_pitch_down_warning)
@@ -2772,6 +3555,35 @@ def run_g1_dual_arm_box(
             episode_diag["left_thumb_box_distance"] = float(dex3_l_digit_dist["thumb"])
             episode_diag["left_index_box_distance"] = float(dex3_l_digit_dist["index"])
             episode_diag["left_middle_box_distance"] = float(dex3_l_digit_dist["middle"])
+            episode_diag["wrist_orientation_locked"] = bool(wrist_orientation_locked)
+            episode_diag["right_wrist_orientation_error"] = float(rw_orient_err)
+            episode_diag["left_wrist_orientation_error"] = float(lw_orient_err)
+            episode_diag["wrist_orientation_lock_time"] = (
+                float(wrist_lock_snap_time) if wrist_lock_snap_time is not None else float("nan")
+            )
+            episode_diag["palm_contact_stable_time"] = float(palm_contact_stable_s_diag)
+            episode_diag["finger_contact_stable_time"] = float(finger_contact_stable_s_diag)
+            episode_diag["right_index_tip_distance"] = float(dex3_r_digit_dist["index"])
+            episode_diag["left_index_tip_distance"] = float(dex3_l_digit_dist["index"])
+            episode_diag["right_thumb_tip_distance"] = float(dex3_r_digit_dist["thumb"])
+            episode_diag["left_thumb_tip_distance"] = float(dex3_l_digit_dist["thumb"])
+            episode_diag["palm_first_settle_s"] = float(palm_first_settle_s)
+        else:
+            episode_diag["wrist_orientation_locked"] = bool(
+                wrist_orientation_locked and use_dex3_hands
+            )
+            episode_diag["right_wrist_orientation_error"] = float(rw_orient_err)
+            episode_diag["left_wrist_orientation_error"] = float(lw_orient_err)
+            episode_diag["wrist_orientation_lock_time"] = (
+                float(wrist_lock_snap_time) if wrist_lock_snap_time is not None else float("nan")
+            )
+            episode_diag["palm_contact_stable_time"] = float(palm_contact_stable_s_diag)
+            episode_diag["finger_contact_stable_time"] = float(finger_contact_stable_s_diag)
+            episode_diag["right_index_tip_distance"] = float("nan")
+            episode_diag["left_index_tip_distance"] = float("nan")
+            episode_diag["right_thumb_tip_distance"] = float("nan")
+            episode_diag["left_thumb_tip_distance"] = float("nan")
+            episode_diag["palm_first_settle_s"] = float(palm_first_settle_s)
 
         if pen_ok_acc and (
             (rc >= 1 or geom_touch_r)
@@ -2837,7 +3649,8 @@ def run_g1_dual_arm_box(
         )
 
         assist_should_arm = bool(
-            phase in ARM_ASSIST_PHASES
+            (not finger_place_only)
+            and phase in ARM_ASSIST_PHASES
             and (not assist_finger_actuators_unsupported)
             and (not penetration_blocks_assist)
             and assist_prep
@@ -2871,6 +3684,8 @@ def run_g1_dual_arm_box(
         if use_dex3_hands:
             dex3_ftip_lift_ok = bool(dex3_assist_contact_ok)
 
+        dex3_wrist_lift_ok = (not use_dex3_hands) or bool(wrist_orientation_locked)
+
         dex3_lift_settle_ok = (not use_dex3_hands) or (
             dex3_real_contact_stable_s + 1e-9 >= float(DEX3_LIFT_CONTACT_SETTLE_TIME_S)
         )
@@ -2885,10 +3700,12 @@ def run_g1_dual_arm_box(
         )
 
         assist_lift_gate = bool(
-            assist_prep
+            (not finger_place_only)
+            and assist_prep
             and squeeze_gate_cleared_t is not None
             and max_pen_any_episode <= pen_episode_cap_m + 1e-12
             and dex3_ftip_lift_ok
+            and dex3_wrist_lift_ok
             and dex3_lift_settle_ok
             and lift_contact_ok_for_assist
         )
@@ -2899,6 +3716,7 @@ def run_g1_dual_arm_box(
         gp_assist = gp_proxy
         if (
             assist_armed
+            and (not no_assist)
             and (not assist_finger_actuators_unsupported)
             and phase in ACTIVE_ASSIST_PHASES
             and assist_lift_gate
@@ -3038,6 +3856,7 @@ def run_g1_dual_arm_box(
                     float(timeout),
                     squeeze_gate_cleared_t,
                     post_gate_virtual_lag_s=post_gate_freeze_accum,
+                    finger_place_only=finger_place_only,
                 )
                 == DualPhase.DONE
             ):
@@ -3061,12 +3880,17 @@ def run_g1_dual_arm_box(
                         float(timeout),
                         squeeze_gate_cleared_t,
                         post_gate_virtual_lag_s=post_gate_freeze_accum,
+                        finger_place_only=finger_place_only,
                     )
                     == DualPhase.DONE
                 ):
                     mission_complete = True
                 viewer.sync()
-                time.sleep(max(0.0, float(model.opt.timestep) - (time.time() - loop_t0)))
+                sleep_s = max(
+                    0.0,
+                    float(model.opt.timestep) - (time.time() - loop_t0),
+                ) / max(float(motion.viewer_playback_mul), 1.0)
+                time.sleep(sleep_s)
 
     if headless:
         run_headless()
@@ -3191,6 +4015,38 @@ def run_g1_dual_arm_box(
     episode_diag["waist_pitch_range_episode_rad"] = float(wp_rng)
     episode_diag["avg_right_palm_vel_near_contact_m_per_s"] = float(avg_r_vel)
     episode_diag["avg_left_palm_vel_near_contact_m_per_s"] = float(avg_l_vel)
+    episode_diag["max_palm_contact_stable_time_episode"] = float(max_palm_contact_stable_s_diag_episode)
+    episode_diag["max_finger_contact_stable_time_episode"] = float(
+        max_finger_contact_stable_s_diag_episode
+    )
+    episode_diag["wrist_orientation_lock_duration_s"] = float(wrist_orientation_lock_duration_s)
+    episode_diag["wrist_orientation_ever_locked"] = bool(wrist_orientation_ever_locked)
+    episode_diag["max_right_wrist_orientation_error_episode"] = float(
+        wrist_lock_max_axis_err_r_episode
+    )
+    episode_diag["max_left_wrist_orientation_error_episode"] = float(
+        wrist_lock_max_axis_err_l_episode
+    )
+    episode_diag["min_right_index_tip_distance_episode"] = (
+        float(min_right_index_tip_dist_episode)
+        if np.isfinite(min_right_index_tip_dist_episode)
+        else float("nan")
+    )
+    episode_diag["min_left_index_tip_distance_episode"] = (
+        float(min_left_index_tip_dist_episode)
+        if np.isfinite(min_left_index_tip_dist_episode)
+        else float("nan")
+    )
+    episode_diag["min_right_thumb_tip_distance_episode"] = (
+        float(min_right_thumb_tip_dist_episode)
+        if np.isfinite(min_right_thumb_tip_dist_episode)
+        else float("nan")
+    )
+    episode_diag["min_left_thumb_tip_distance_episode"] = (
+        float(min_left_thumb_tip_dist_episode)
+        if np.isfinite(min_left_thumb_tip_dist_episode)
+        else float("nan")
+    )
 
     out: dict[str, Any] = {
         "right_palm_distance_to_target": float(min_touch_r_dist),
@@ -3215,6 +4071,7 @@ def run_g1_dual_arm_box(
         "left_proxy_penetration": float(max_pen_left_proxy_episode),
         "left_target_mode": left_target_mode,
         "grasp_assist_used": bool(grasp_assist_used),
+        "no_assist_mode": bool(no_assist),
         "box_height_delta": float(bh_final),
         "lift_success": bool(lift_final),
         "max_penetration_depth_right": float(max_pen_right_palm_episode),
@@ -3229,6 +4086,15 @@ def run_g1_dual_arm_box(
             )
         ),
         "use_dex3_pipeline": bool(use_dex3_hands),
+        "sim_physics_timestep_s": float(applied_dt),
+        "sim_timeline_speed": float(motion.timeline_speed),
+        "sim_fast_profile": bool(fast),
+        "finger_place_only": bool(finger_place_only),
+        "max_dex3_digits_on_box_count": int(max_dex3_digits_on_box_count),
+        "dex3_digits_frozen_joint_count": int(
+            len(finger_controller.frozen_joint_snapshot()) if finger_controller else 0
+        ),
+        "all_dex3_digits_on_box": bool(max_dex3_digits_on_box_count >= 6),
         "dual_episode_penetration_cap_m": float(pen_episode_cap_m),
         "dual_pregrasp_reach_metric_ok": reach_dual_ok,
         "dual_penetration_ok": penetration_ok_dual,
@@ -3260,6 +4126,18 @@ def run_g1_dual_arm_box(
         "dex3_max_left_fingertip_contacts": int(max_dex3_left_fingertip_contacts_episode),
         "dex3_max_real_contact_stable_s": float(max_dex3_real_contact_stable_episode),
         "dex3_contact_stable_decay_events": int(dex3_contact_stable_decay_events),
+        "wrist_orientation_locked": bool(wrist_orientation_ever_locked),
+        "wrist_orientation_lock_time": (
+            float(wrist_lock_snap_time) if wrist_lock_snap_time is not None else float("nan")
+        ),
+        "right_wrist_orientation_error": float(wrist_lock_max_axis_err_r_episode),
+        "left_wrist_orientation_error": float(wrist_lock_max_axis_err_l_episode),
+        "palm_contact_stable_time": float(max_palm_contact_stable_s_diag_episode),
+        "finger_contact_stable_time": float(max_finger_contact_stable_s_diag_episode),
+        "right_index_tip_distance": episode_diag.get("right_index_tip_distance", float("nan")),
+        "left_index_tip_distance": episode_diag.get("left_index_tip_distance", float("nan")),
+        "right_thumb_tip_distance": episode_diag.get("right_thumb_tip_distance", float("nan")),
+        "left_thumb_tip_distance": episode_diag.get("left_thumb_tip_distance", float("nan")),
         "dex3_phase_name": str(episode_diag.get("dex3_timeline_phase_display", final_phase.name)),
         "finger_closure_blocked_reason": episode_diag.get("finger_closure_blocked_reason"),
         "ik_recovery_count": int(ik_debounce_rec),
@@ -3323,6 +4201,16 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Cap simulated horizon for quicker smoke runs (see FAST_DUAL_ARM_TIMEOUT_CAP_S).",
     )
+    ap.add_argument(
+        "--allow-lift",
+        action="store_true",
+        help="Enable lift/lower timeline and bounded box assist (default: finger placement only).",
+    )
+    ap.add_argument(
+        "--no-assist",
+        action="store_true",
+        help="Disable bounded xfrc_applied lift assist; keep IK/finger behavior unchanged.",
+    )
     ap.add_argument("--max-steps", type=int, default=None, help="Stop after N physics steps (headless/viewer).")
     ap.add_argument("--print-every", type=float, default=None, help="Seconds between progress prints when verbose.")
     ns = ap.parse_args(argv)
@@ -3341,6 +4229,8 @@ def main(argv: list[str] | None = None) -> None:
             max_joint_from_neutral=ns.max_joint_from_neutral,
             dbg_markers=ns.dbg_markers,
             dbg_penetration=ns.dbg_penetration,
+            finger_place_only=not bool(ns.allow_lift),
+            no_assist=ns.no_assist,
         )
     except FileNotFoundError as exc:
         print(exc, file=sys.stderr)
