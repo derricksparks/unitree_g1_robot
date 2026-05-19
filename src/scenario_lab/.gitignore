@@ -1,0 +1,46 @@
+*.egg-info
+.idea
+outputs
+logs
+wandb
+MUJOCO_LOG.TXT
+deploy/robots/go2/build
+deploy/robots/g1/build
+deploy/robots/h1_2/build
+deploy/robots/g1_23dof/build
+deploy/robots/r1/build
+deploy/robots/a2/build
+src/assets/motions/g1/dance1_subject2.npz
+simulate/build
+
+# Python virtual environments (large; never commit)
+.venv/
+venv/
+env/
+.env/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.so
+
+# Large ML checkpoints and experiment runs (keep deploy/**/exported/*.onnx if tracked)
+*.pt
+*.pth
+*.ckpt
+scripts/wandb/
+**/offline-run-*/
+
+# Local caches and accidental pip artifacts
+.cache/
+=*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~

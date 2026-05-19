@@ -1,0 +1,34 @@
+# ----------------------------------------------------------------------------
+# OPTIONAL dual-policy snippet for config.yaml (manual merge)
+#
+# DO NOT blindly merge until box_transport ONNX exists — every RL state listed
+# under FSM["_"] is constructed at controller startup (loads deploy.yaml +
+# policy.onnx). Missing files will abort launch.
+#
+# Workflow:
+# 1. Train/export velocity policy (existing).
+# 2. Train/export box transport policy into policy/box_transport/v0/exported/.
+# 3. Add the two blocks below to your deploy/robots/g1/config/config.yaml.
+# ----------------------------------------------------------------------------
+
+# (A) Under FSM["_"], add alongside other states (pick a free id):
+#
+#    Box_Transport:
+#      id: 6
+#      type: RLBase
+
+# (B) Add sibling section (same level as Passive / Velocity / FixStand):
+
+#  Box_Transport:
+#    transitions:
+#      Passive: LT + B.on_pressed
+#      FixStand: LT + A.on_pressed
+#      Velocity: RT + A.on_pressed
+#    policy_dir: config/policy/box_transport/v0
+#
+# Button chords use the same style as Velocity / Mimic. Edit to match your
+# gamepad mapping. Suggested operator flow:
+#   Passive → FixStand → Box_Transport (manip) ↔ FixStand ↔ Velocity (walk).
+# From FixStand, pick *either* RT+A (walk) or add a third chord for Box_Transport
+# (e.g. RB + B.on_pressed — add that line under FixStand.transitions in the
+# main config and mirror here).

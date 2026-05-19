@@ -1,8 +1,3 @@
-# Dual RL FSM: walking (velocity ONNX) + box transport (stationary ONNX).
-# Ships alongside stock config.yaml — copy over config.yaml (with backup)
-# once box_transport ONNX exists under policy/box_transport/v0/exported/.
-# See deploy/robots/g1/config/fsm_box_transport_addon.example.yaml and
-# deploy/robots/g1/config/policy/box_transport/DUAL_POLICY_AND_TELEOP.md
 FSM:
   _: # enabled fsms
     Passive:
@@ -17,13 +12,9 @@ FSM:
       id: 5
       type: Mimic
 
-    Box_Transport:
-      id: 6
-      type: RLBase
-
 
   Passive:
-    transitions:
+    transitions: 
       FixStand: LT + up.on_pressed
     mode: [
       1,1,1,1,1,1,
@@ -36,16 +27,15 @@ FSM:
       3,3,3,3,3,3,
       3,3,3,3,3,3,
       3,3,3,
-      3,3,3,3,3,3,3,
-      3,3,3,3,3,3,3,
+      3,3,3,3,3,3,3,  
+      3,3,3,3,3,3,3,  
     ]
 
 
   FixStand:
-    transitions:
+    transitions: 
       Passive: LT + B.on_pressed
       Velocity: RT + A.on_pressed
-      Box_Transport: RB + B.on_pressed
 
     kp: [
       100,100,100,150,40,40,
@@ -74,7 +64,7 @@ FSM:
 
 
   Velocity:
-    transitions:
+    transitions: 
       Passive: LT + B.on_pressed
       Mimic_Dance1_subject2: RB + A.on_pressed
 
@@ -90,12 +80,3 @@ FSM:
     policy_dir: config/policy/mimic/dance1_subject2/
     time_start: 0.0
     time_end: 1000.0
-
-
-  Box_Transport:
-    transitions:
-      Passive: LT + B.on_pressed
-      FixStand: LT + A.on_pressed
-      Velocity: RT + A.on_pressed
-
-    policy_dir: config/policy/box_transport/v0

@@ -1,4 +1,4 @@
-This directory is reserved for exported whole-body box transport policies.
+# Box transport policy (exported ONNX)
 
 Expected layout after training/export:
 
@@ -8,6 +8,13 @@ box_transport/v0/
   params/deploy.yaml
 ```
 
-The FSM state should only be enabled after `exported/policy.onnx` exists. The
-template `v0/params/deploy.yaml` documents the observation order and safety
-settings expected by the G1 deploy controller.
+`v0/params/deploy.yaml` defines observations, command placeholders, actions, and safety clamps for the G1 deploy stack.
+
+## Dual-policy FSM (walking + manipulation)
+
+Walking stays on **`config/policy/velocity`**; manipulation uses **this** folder. Both use `type: RLBase` — each state loads its own `deploy.yaml` + ONNX at **controller startup**. Do **not** register `Box_Transport` under `FSM["_"]` until `exported/policy.onnx` exists, or launch will fail.
+
+Merge instructions and teleop/classical baselines:
+
+- `DUAL_POLICY_AND_TELEOP.md`
+- `../../fsm_box_transport_addon.example.yaml`
