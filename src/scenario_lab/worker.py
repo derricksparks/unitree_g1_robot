@@ -58,7 +58,7 @@ class RolloutWorkerThread(QThread):
 
     env = None
     try:
-      self.status_update.emit("Loading environment and policy…")
+      self.status_update.emit("Загрузка среды и политики…")
       env, policy = build_vec_env_policy(self._cfg)
 
       episodes_done = 0
@@ -72,7 +72,7 @@ class RolloutWorkerThread(QThread):
 
       while episodes_done < self._cfg.episode_target and steps_global < self._cfg.max_steps:
         if self._stop_requested:
-          self.status_update.emit("Stopping after user request.")
+          self.status_update.emit("Остановка по запросу пользователя.")
           break
 
         with torch.no_grad():
@@ -116,10 +116,10 @@ class RolloutWorkerThread(QThread):
           or steps_global == 1
         ):
           msg = (
-            f"Steps: {steps_global} | Env0 episodes logged: {episodes_done}/{self._cfg.episode_target}"
+            f"Шаги: {steps_global} | Эпизодов (среда 0): {episodes_done}/{self._cfg.episode_target}"
           )
           if episodes_done > 0:
-            msg += f" | last_ep_reward_env0: {last_ep_reward:.3g}"
+            msg += f" | последняя награда (среда 0): {last_ep_reward:.3g}"
           self.status_update.emit(msg)
 
       self.rollout_finished.emit()
