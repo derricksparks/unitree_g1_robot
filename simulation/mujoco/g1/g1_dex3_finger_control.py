@@ -110,6 +110,27 @@ _FINGER_LIFT_HOLD_R: dict[str, float] = {
     "right_hand_index_1_joint": 1.05,
 }
 
+# Carry posture for a box: index hooks under the lower edge, thumb opposes the
+# front face, and middle finger stays mostly extended to avoid box penetration.
+_FINGER_BOX_STABLE_SUPPORT_L: dict[str, float] = {
+    "left_hand_thumb_0_joint": 0.62,
+    "left_hand_thumb_1_joint": 0.42,
+    "left_hand_thumb_2_joint": 1.18,
+    "left_hand_middle_0_joint": -0.10,
+    "left_hand_middle_1_joint": -0.12,
+    "left_hand_index_0_joint": -0.68,
+    "left_hand_index_1_joint": -0.72,
+}
+_FINGER_BOX_STABLE_SUPPORT_R: dict[str, float] = {
+    "right_hand_thumb_0_joint": 0.62,
+    "right_hand_thumb_1_joint": -0.42,
+    "right_hand_thumb_2_joint": -1.18,
+    "right_hand_middle_0_joint": 0.10,
+    "right_hand_middle_1_joint": 0.12,
+    "right_hand_index_0_joint": 0.68,
+    "right_hand_index_1_joint": 0.72,
+}
+
 _FINGER_RELEASE_L: dict[str, float] = dict(_FINGER_PREGRASP_SPREAD_L)
 _FINGER_RELEASE_R: dict[str, float] = dict(_FINGER_PREGRASP_SPREAD_R)
 
@@ -268,6 +289,8 @@ class Dex3FingerController:
             return {**_FINGER_SIDE_SUPPORT_L, **_FINGER_SIDE_SUPPORT_R}
         if mode == "lift_hold_grasp":
             return {**_FINGER_LIFT_HOLD_L, **_FINGER_LIFT_HOLD_R}
+        if mode in ("box_stable_support_grasp", "stable_box_grasp"):
+            return {**_FINGER_BOX_STABLE_SUPPORT_L, **_FINGER_BOX_STABLE_SUPPORT_R}
         if mode == "release":
             return {**_FINGER_RELEASE_L, **_FINGER_RELEASE_R}
         raise ValueError(f"unknown finger mode {mode!r}")

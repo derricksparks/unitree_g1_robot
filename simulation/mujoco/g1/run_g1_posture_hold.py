@@ -156,6 +156,73 @@ def stabilize_floating_base(
     mujoco.mj_forward(model, data)
 
 
+def stabilize_floating_base_scaled(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    *,
+    base_map: dict[str, int],
+    nominal_qpos7: np.ndarray,
+    scale: float = 1.0,
+    y_scale: float | None = None,
+) -> float:
+    """
+    Blend floating-base +X (and optionally +Y) toward nominal; hold Z and orientation.
+
+    Back-compat: ``scale`` sets X blend; ``y_scale`` defaults to 1.0 (full Y hold).
+    Prefer ``stabilize_floating_base_xy_scaled`` for explicit X/Y control.
+
+    Returns pre-blend X tracking error (m) vs nominal.
+    """
+    err_x, _ = stabilize_floating_base_xy_scaled(
+        model,
+        data,
+        base_map=base_map,
+        nominal_qpos7=nominal_qpos7,
+        x_scale=scale,
+        y_scale=1.0 if y_scale is None else y_scale,
+    )
+    return err_x
+
+
+def stabilize_floating_base_xy_scaled(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    *,
+    base_map: dict[str, int],
+    nominal_qpos7: np.ndarray,
+    x_scale: float = 1.0,
+    y_scale: float = 1.0,
+) -> tuple[float, float]:
+    """
+    Blend pelvis +X/+Y toward nominal; hold nominal Z and quaternion.
+
+    new_x = (1-x_scale)*current_x + x_scale*nominal_x
+    new_y = (1-y_scale)*current_y + y_scale*nominal_y
+
+    Returns pre-blend (x_error_m, y_error_m).
+    """
+    x_scale = float(np.clip(x_scale, 0.0, 1.0))
+    y_scale = float(np.clip(y_scale, 0.0, 1.0))
+    qp = base_map["qpos_adr"]
+    qv = base_map["qvel_adr"]
+    nominal = np.asarray(nominal_qpos7, dtype=float).reshape(7)
+    current = np.asarray(data.qpos[qp + 0 : qp + 7], dtype=float).reshape(7)
+    err_x = float(abs(current[0] - nominal[0]))
+    err_y = float(abs(current[1] - nominal[1]))
+
+    if x_scale >= 1.0 - 1e-9 and y_scale >= 1.0 - 1e-9:
+        data.qpos[qp + 0 : qp + 7] = nominal
+    else:
+        blended = nominal.copy()
+        blended[0] = (1.0 - x_scale) * current[0] + x_scale * nominal[0]
+        blended[1] = (1.0 - y_scale) * current[1] + y_scale * nominal[1]
+        data.qpos[qp + 0 : qp + 7] = blended
+
+    data.qvel[qv + 0 : qv + 6] = 0.0
+    mujoco.mj_forward(model, data)
+    return err_x, err_y
+
+
 def command_position_actuators(
     model: mujoco.MjModel,
     data: mujoco.MjData,
