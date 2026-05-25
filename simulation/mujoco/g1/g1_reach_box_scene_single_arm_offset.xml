@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="g1_reach_box_scene_single_arm_offset">
+  <!-- Same layout as ``g1_reach_box_scene.xml``, but lateral body offset clears neutral-pose
+       torso/legs overlap for STOW/APPROACH in single-arm grasp/touch/reach demos. -->
+  <include file="assets/g1_position_actuated.xml"/>
+
+  <asset>
+    <material name="reach_ground" rgba="0.82 0.84 0.86 1" />
+    <material name="reach_box" rgba="0.95 0.55 0.12 1" />
+  </asset>
+
+  <worldbody>
+    <light pos="1 1 3" dir="-1 -1 -2" diffuse="0.85 0.85 0.85" />
+    <body name="reach_target_box" pos="0.55 -0.22 0.88">
+      <site name="g1_vis_box_center" type="sphere" size="0.006" pos="0 0 0" rgba="0 0 1 1" group="2"/>
+      <site name="g1_vis_near_face_center" type="sphere" size="0.006" pos="-0.05 0 0" rgba="1 1 0 1" group="2"/>
+      <site name="g1_vis_palm_pregrasp" type="sphere" size="0.006" pos="-0.065 0 -0.02" rgba="0 1 0 1" group="2"/>
+      <site name="g1_vis_palm_approach" type="sphere" size="0.006" pos="-0.065 0 0.08" rgba="0 1 1 1" group="2"/>
+      <site name="box_near_face_center_site" type="sphere" size="0.005" pos="-0.05 0 -0.02" rgba="1 1 0 1" group="2"/>
+      <site name="box_right_contact_site" type="sphere" size="0.005" pos="-0.05 -0.06 -0.02" rgba="0 1 0 1" group="2"/>
+      <site name="box_left_contact_site" type="sphere" size="0.005" pos="-0.05 0.06 -0.02" rgba="1 0.5 0 1" group="2"/>
+      <site name="box_right_lower_edge_site" type="sphere" size="0.005" pos="-0.05 -0.05 -0.05" rgba="0 1 1 1" group="2"/>
+      <site name="box_left_lower_edge_site" type="sphere" size="0.005" pos="-0.05 0.05 -0.05" rgba="0.55 0 0.85 1" group="2"/>
+      <geom
+        name="box_geom"
+        type="box"
+        size="0.05 0.05 0.05"
+        contype="1"
+        conaffinity="1"
+        rgba="1 0 0 1"
+        condim="4"
+        friction="1.0 0.1 0.1"
+        solimp="0.98 0.995 0.0005 0.5 2"
+        solref="0.005 1"
+        margin="0.0005"
+      />
+    </body>
+    <geom name="reach_floor" type="plane" pos="0 0 0" size="8 8 0.05" material="reach_ground" condim="3" friction="1 1 1" />
+  </worldbody>
+</mujoco>
