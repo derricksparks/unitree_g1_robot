@@ -1,0 +1,93 @@
+# --- External dependencies (clone locally; do not commit) ---
+external/g1-manipulation-challenge/
+external/g1-manipulation-challenge/.git
+
+# --- Python environment ---
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# --- Python bytecode and tool caches ---
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+*.egg-info/
+.eggs/
+dist/
+build/
+=*
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# --- MuJoCo / simulation logs and temp ---
+MUJOCO_LOG.TXT
+**/MUJOCO_LOG.TXT
+simulation/mujoco/g1/tmp*.xml
+*.tmp.xml
+
+# --- Build artifacts (C++ deploy / simulate) ---
+simulate/build/
+deploy/robots/*/build/
+deploy/robots/g1/build/
+
+# --- ML training artifacts (large) ---
+*.pt
+*.pth
+*.ckpt
+scripts/wandb/
+**/offline-run-*/
+src/assets/motions/g1/dance1_subject2.npz
+
+# --- Bundled / duplicate GUI drops (not part of Lucky MuJoCo demo) ---
+gui_bundle/
+scenario_lab_gui_bundle.zip
+*.zip
+
+# --- ONNX policy weights (fetch via external/ clone) ---
+external/g1-manipulation-challenge/*.onnx
+external/g1-manipulation-challenge/*.onnx.data
+*.onnx.data
+
+# --- Legacy locomotion experiments (superseded by Lucky walker + table_pick_locked_carry) ---
+simulation/mujoco/g1/run_g1_payload_*.py
+simulation/mujoco/g1/g1_lipm_mpc.py
+simulation/mujoco/g1/g1_locomotion_scene.py
+simulation/mujoco/g1/g1_ground_contact.py
+tests/test_g1_payload_*.py
+
+# --- Early one-off reach/grasp demos (folded into lucky_pick_transport / table_pick) ---
+simulation/mujoco/g1/run_g1_direct_side_reach.py
+simulation/mujoco/g1/run_g1_dual_arm_box.py
+simulation/mujoco/g1/run_g1_grasp_box.py
+simulation/mujoco/g1/run_g1_reach_box.py
+simulation/mujoco/g1/run_g1_right_arm_reach.py
+simulation/mujoco/g1/run_g1_right_arm_ik_demo.py
+simulation/mujoco/g1/run_g1_touch_box.py
+simulation/mujoco/g1/g1_proxy_deprecated.py
+simulation/mujoco/g1/run_g1_lucky_pick_lift_demo.py
+simulation/mujoco/g1/run_g1_static_arm_pose_cli.py
+simulation/mujoco/g1/run_g1_vision_box_detection_demo.py
+tests/test_g1_direct_side_reach.py
+tests/test_g1_static_arm_pose_cli.py
+tests/test_g1_vision_box_detection.py
+
+# --- Dev-only inspectors (not required for warehouse demo) ---
+simulation/mujoco/g1/inspect_g1_model.py
+simulation/mujoco/g1/inspect_unitree_g1_assets.py
+simulation/mujoco/g1/add_position_actuators.py
+simulation/mujoco/g1/load_g1_model.py
+simulation/mujoco/g1/humanoidverse_bridge/run_humanoidverse_bridge_probe.py
